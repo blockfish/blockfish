@@ -1,0 +1,5 @@
+*\#
+*~
+**/*.zo
+**/*.dep
+.dir-locals.el
