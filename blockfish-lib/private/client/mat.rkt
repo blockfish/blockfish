@@ -10,6 +10,7 @@
                exact-integer?
                exact-integer?
                any)]
+  [mat->list (-> mat? (listof vector))]
   [mat-blit! (-> mat?
                  any/c
                  (listof (cons/c exact-integer? exact-integer?))
@@ -31,13 +32,20 @@
 ;; num-cols : nat
 ;; rows : rows
 ;; --
-;; rows = [vectorof [vector cell #:length num-cols]]
+;; rows = [vectorof [vectorof cell #:length num-cols]]
 (struct mat [num-cols rows] #:mutable)
 
 ;; -> mat
 (define (make-mat #:cols num-cols)
   (mat num-cols #()))
 
+;; mat -> [vectorof [vectorof cell]]
+(define (mat->list m)
+  (if (= (vector-length (mat-rows m)) 0)
+      (list (make-vector (mat-num-cols m) #f))
+      (for/list ([row (in-vector (mat-rows m))]) row)))
+
+;; mat -> mat
 (define (mat-copy m)
   (struct-copy mat m
                [rows (vector-map vector-copy (mat-rows m))]))
@@ -93,6 +101,8 @@
 
 (module+ test
   (let ([m (make-mat #:cols 3)])
+    (check-equal? (mat->list m) '(#(#f #f #f)))
+
     (mat-blit! m 'J '([0 . 0] [0 . 1] [0 . 2] [1 . 0]))
     (check-equal? (mat-rows m)
                   (vector #(J  J  J)
@@ -118,6 +128,13 @@
                           #(Z  Z  I)
                           #(Z  #f I)
                           #(#f #f I)))
+
+    (check-equal? (mat->list m)
+                  (list #(J  Z  I)
+                        #(Z  Z  I)
+                        #(Z  #f I)
+                        #(#f #f I)))
+
     (mat-clear-filled! m)
     (check-equal? (mat-rows m)
                   (vector #(Z  #f I)

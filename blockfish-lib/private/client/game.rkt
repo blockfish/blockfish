@@ -14,6 +14,10 @@
  tet-hard-drop!
  tet-hold!
  tet-reset!
+ tet-game-state->snapshot
+ ; inputs
+ input?
+ tet-input!
  ; piece state
  piece-state?
  piece-state-color
@@ -21,6 +25,8 @@
 
 (require
  "./mat.rkt"
+ "../types.rkt"
+ "../brain/snapshot.rkt"
  (prefix-in srs: "../srs.rkt")
  (only-in racket/list shuffle take))
 
@@ -52,7 +58,7 @@
 ;; mino-color -> piece-stat
 (define (initial-piece-state mc)
   (define shape (hash-ref srs:4mino-shapes mc))
-  (define spawn (srs:shape-data-spawn shape))
+  (define spawn (shape-data-spawn shape))
   (piece-state mc
                (car spawn)
                (cdr spawn)
@@ -61,11 +67,11 @@
 ;; piece-state -> [listof [cons row-nat col-nat]]
 (define (piece-state-coords ps)
   (define shape (hash-ref srs:4mino-shapes (piece-state-color ps)))
-  (for/list ([ij (in-list (srs:shape-data-coords shape))])
+  (for/list ([ij (in-list (shape-data-coords shape))])
     (define-values [j* i*]
       (rotate-coords (cdr ij)
                      (car ij)
-                     (srs:shape-data-size shape)
+                     (shape-data-size shape)
                      (piece-state-rot ps)))
     (cons (+ i* (piece-state-row ps))
           (+ j* (piece-state-col ps)))))
@@ -107,7 +113,7 @@
 ;; -> bag-rand
 (define (7bag #:previews [n-previews 5])
   (bag-rand n-previews
-            (λ () (shuffle srs:mino-colors))
+            (λ () (shuffle mino-colors))
             '()))
 
 ;; bag-rand -> bag-rand
@@ -215,3 +221,25 @@
 ;; tet-game-state -> [listof mino-type]
 (define (tet-game-state-next gs)
   (bag-rand-previews (tet-game-state-bag gs)))
+
+;; tet-game-state -> snapshot
+(define (tet-game-state->snapshot gs)
+  (snapshot (mat->list (tet-game-state-matrix gs))
+            (cons (piece-state-color (tet-game-state-current gs))
+                  (tet-game-state-next gs))
+            (tet-game-state-hold gs)))
+
+;; ---------------------------------------------------------------------------------------
+;; inputs
+
+(define (input? x) (memq x '(left right cw ccw hold)))
+(define (move-input? x) (memq x '(left right)))
+(define (rotate-input? x) (memq x '(cw ccw)))
+
+;; tet-game-state [listof input -> void
+(define (tet-input! gs is)
+  (for ([i (in-list is)])
+    (cond
+      [(move-input? i) (tet-move! gs i)]
+      [(rotate-input? i) (tet-rotate! gs i)]
+      [(eq? i 'hold) (tet-hold! gs)])))
