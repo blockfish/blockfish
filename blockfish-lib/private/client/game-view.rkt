@@ -60,9 +60,10 @@
                           (tet-game-state-current/ghost gs*)))
       (set! sugidx 0))
 
-    (define/public (switch-suggestion)
+    (define/public (switch-suggestion delta)
       (unless (no-suggestions?)
-        (set! sugidx (modulo (add1 sugidx) (vector-length suggestions)))))
+        (define len (vector-length suggestions))
+        (set! sugidx (modulo (+ sugidx len delta) len))))
 
     (define/override (get-suggest-color)
       (if (no-suggestions?) #f

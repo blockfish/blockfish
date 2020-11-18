@@ -56,7 +56,7 @@
       (define finish-proc (start-suggest))
       (define snapshot (tet-game-state->snapshot gs))
       (thread (λ ()
-                (define result (ai-suggest snapshot))
+                (define result (ai snapshot))
                 (queue-callback (λ () (finish-proc result))))))
 
     (do-suggest)
@@ -90,7 +90,10 @@
          (do-suggest)
          (refresh)]
         [(#\s)
-         (send view switch-suggestion)
+         (send view switch-suggestion +1)
+         (refresh)]
+        [(#\a)
+         (send view switch-suggestion -1)
          (refresh)]
         [(shift)
          (when (tet-hold! gs)
