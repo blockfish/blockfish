@@ -1,6 +1,6 @@
 #lang racket/base
 (require
- "./private/brain/ai.rkt"
+ "./engine.rkt"
  "./private/client/game.rkt"
  "./private/client/game-view.rkt"
  "./private/client/render.rkt"
@@ -56,7 +56,7 @@
       (define finish-proc (start-suggest))
       (define snapshot (tet-game-state->snapshot gs))
       (thread (λ ()
-                (define result (ai snapshot))
+                (define result (run-engine snapshot))
                 (queue-callback (λ () (finish-proc result))))))
 
     (do-suggest)

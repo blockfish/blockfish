@@ -6,13 +6,13 @@
 
 ```sh
 # (in repository root)
-raco pkg install ./blockfish-lib
+raco pkg install ./blockfish-client-lib
 ```
 
 ## Running
 
 ```sh
-racket -l blockfish
+racket -l blockfish/client
 ```
 
 To run tests:

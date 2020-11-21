@@ -26,7 +26,6 @@
 (require
  "./mat.rkt"
  "../types.rkt"
- "../brain/snapshot.rkt"
  (prefix-in srs: "../srs.rkt")
  (only-in racket/list shuffle take))
 
@@ -231,10 +230,6 @@
 
 ;; ---------------------------------------------------------------------------------------
 ;; inputs
-
-(define (input? x) (memq x '(left right cw ccw hold)))
-(define (move-input? x) (memq x '(left right)))
-(define (rotate-input? x) (memq x '(cw ccw)))
 
 ;; tet-game-state [listof input -> void
 (define (tet-input! gs is)

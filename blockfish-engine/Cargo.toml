@@ -1,0 +1,10 @@
+[package]
+name = "blockfish"
+version = "0.1.0"
+authors = ["iitalics <iitalics@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+thiserror = "1.0"
+env_logger = "0.8"
+log = "0.4.8"
