@@ -4,7 +4,16 @@ version = "0.1.0"
 authors = ["iitalics <iitalics@gmail.com>"]
 edition = "2018"
 
+[[bin]]
+name = "blockfish-repl"
+path = "src/bin/blockfish.rs"
+required-features = ["repl"]
+
+[features]
+default = []
+repl = ["env_logger"]
+
 [dependencies]
 thiserror = "1.0"
-env_logger = "0.8"
 log = "0.4.8"
+env_logger = { version = "0.8", optional = true }

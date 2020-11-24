@@ -8,7 +8,7 @@ edition = "2018"
 sdl2 = { version = "0.34", features = ["ttf"] }
 rand = "0.7"
 thiserror = "1.0"
-log = "0.4"
+log = "0.4.8"
 pretty_env_logger = "0.4"
 
 [dependencies.blockfish]
