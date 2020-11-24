@@ -1,2 +1,2 @@
 [workspace]
-members = ["blockfish-engine"]
+members = ["blockfish-engine", "blockfish-client"]

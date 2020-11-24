@@ -1,0 +1,15 @@
+[package]
+name = "blockfish-client"
+version = "0.1.0"
+authors = ["iitalics <iitalics@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+sdl2 = { version = "0.34", features = ["ttf"] }
+rand = "0.7"
+thiserror = "1.0"
+log = "0.4"
+pretty_env_logger = "0.4"
+
+[build-dependencies]
+fontconfig = "0.2"
