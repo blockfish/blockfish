@@ -19,9 +19,11 @@ pub struct Suggestion {
     pub score: i64,
 }
 
+pub type SuggestionsIter = std::sync::mpsc::Receiver<Suggestion>;
+
 // AI algorithm
 
-pub fn ai(snap: Snapshot) -> impl Iterator<Item = Suggestion> {
+pub fn ai(snap: Snapshot) -> SuggestionsIter {
     let srs = srs();
     let mut queue = snap.queue.into_iter();
     let current = queue.next().expect("bug: empty queue");
@@ -40,6 +42,7 @@ pub fn ai(snap: Snapshot) -> impl Iterator<Item = Suggestion> {
                 inputs: norm.finesse(place.col).collect(),
                 score: negative_space(&tmp_mat),
             };
+            std::thread::sleep(std::time::Duration::from_millis(10));
             if tx.send(sugg).is_err() {
                 log::warn!("rx dropped; stopping iteration");
                 break;
@@ -47,7 +50,7 @@ pub fn ai(snap: Snapshot) -> impl Iterator<Item = Suggestion> {
         }
     });
 
-    rx.into_iter()
+    rx
 }
 
 /// Represents a placement of a particular shape.

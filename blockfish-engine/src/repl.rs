@@ -93,6 +93,8 @@ fn input_to_char(inp: Input) -> char {
         Input::CW => 'X',
         Input::CCW => 'Z',
         Input::Hold => 'h',
+        Input::HD => 'd',
+        Input::SD => 'S',
     }
 }
 

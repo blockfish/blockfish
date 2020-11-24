@@ -39,6 +39,7 @@ dependencies = [
 name = "blockfish-client"
 version = "0.1.0"
 dependencies = [
+ "blockfish",
  "fontconfig",
  "log",
  "pretty_env_logger",

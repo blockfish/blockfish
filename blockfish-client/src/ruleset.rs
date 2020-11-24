@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 /// Represents a specification of the game rules, such as the matrix size, the number of
 /// previews, and the shape information for every mino.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Ruleset {
     /// Number of columns in the matrix.
     pub cols: usize,
@@ -44,7 +44,7 @@ impl Ruleset {
     // TODO: parsing rules from text specification
 
     /// Returns a copy of the guideline rules.
-    pub fn guideline() -> Ruleset {
+    pub fn guideline() -> Rc<Ruleset> {
         let mut minos = HashMap::new();
 
         // J, L, S, T, Z
@@ -120,14 +120,14 @@ impl Ruleset {
             },
         );
 
-        Ruleset {
+        Rc::new(Ruleset {
             cols: 10,
             rows: 25,
             visible_rows: 20,
             garbage_height: 8,
             previews: 5,
             minos,
-        }
+        })
     }
 
     fn mino(&self, color: char) -> &PolyMino {

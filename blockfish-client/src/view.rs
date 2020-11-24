@@ -3,7 +3,7 @@ use sdl2::{
     rect::Rect,
     render::{Canvas, RenderTarget, Texture},
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{resources::Resources, ruleset::Ruleset};
 
@@ -12,7 +12,7 @@ use crate::{resources::Resources, ruleset::Ruleset};
 
 /// Encapsulates the view logic.
 pub struct View<'h> {
-    rules: Ruleset,
+    rules: Rc<Ruleset>,
     resources: Resources<'h>,
     texture_creator: &'h TextureCreator,
     theme: Theme,
@@ -31,7 +31,7 @@ type TextureCreator = sdl2::render::TextureCreator<sdl2::video::WindowContext>;
 impl<'h> View<'h> {
     /// Construct a new view with given ruleset and resource data.
     pub fn new(
-        rules: Ruleset,
+        rules: Rc<Ruleset>,
         resources: Resources<'h>,
         canvas: &Canvas<sdl2::video::Window>,
         texture_creator: &'h TextureCreator,
@@ -129,12 +129,15 @@ impl<'h> View<'h> {
         I: IntoIterator,
         I::Item: std::fmt::Display,
     {
+        let mut len = 0;
         for (i, item) in labels.into_iter().enumerate() {
             if i >= self.hud.len() {
                 self.hud.push(Label::new());
             }
             self.hud[i].set(item);
+            len += 1;
         }
+        self.hud.resize_with(len, || unreachable!());
         for label in self.hud.iter_mut() {
             let style = TextStyle {
                 font: &self.resources.hud_font,
@@ -360,7 +363,7 @@ impl<'tx> Label<'tx> {
     }
 
     fn repaint(&mut self, tc: &'tx TextureCreator, style: TextStyle) {
-        if self.texture.is_none() {
+        if self.texture.is_none() && self.buf.len() > 0 {
             let surf = style
                 .font
                 .render(&self.buf)

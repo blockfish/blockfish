@@ -1,11 +1,14 @@
 use crate::ruleset::Ruleset;
+use blockfish::{Input, Snapshot};
 use rand::{rngs::ThreadRng, Rng as _};
+use std::{convert::TryInto as _, rc::Rc};
 
 //////////////////////////////////////////////////////////////////////////////////////////
 // Game logic
 
+#[derive(Clone)]
 pub struct Stacker {
-    rules: Ruleset,
+    rules: Rc<Ruleset>,
     matrix: Matrix,
     cheese: Cheese,
     current: Option<Piece>,
@@ -20,7 +23,7 @@ pub type CellColor = char;
 
 impl Stacker {
     /// Constructs a new stacker game state with ruleset `rules`.
-    pub fn new(rules: Ruleset) -> Self {
+    pub fn new(rules: Rc<Ruleset>) -> Self {
         let mut stacker = Stacker {
             matrix: Matrix::new(rules.cols as u16),
             cheese: Cheese::new(rules.cols as u16),
@@ -136,12 +139,64 @@ impl Stacker {
         self.current = self.queue.next().map(|typ| Piece::new(&self.rules, typ));
         self.queue.ensure(self.rules.previews);
     }
+
+    /// Runs each of the given inputs.
+    pub fn run(&mut self, inputs: impl IntoIterator<Item = Input>) {
+        for inp in inputs {
+            match inp {
+                Input::Left => {
+                    self.move_horizontal(-1);
+                }
+                Input::Right => {
+                    self.move_horizontal(1);
+                }
+                Input::CCW => {
+                    self.rotate(-1);
+                }
+                Input::CW => {
+                    self.rotate(1);
+                }
+                Input::Hold => {
+                    self.hold();
+                }
+                Input::HD => {
+                    self.hard_drop();
+                }
+                Input::SD => {
+                    self.sonic_drop();
+                }
+            }
+        }
+    }
+
+    /// Returns a snapshot of the game state. Returns `None` if there is no current piece,
+    /// so the snapshot would be invalid.
+    pub fn to_snapshot(&self) -> Option<Snapshot> {
+        let cur = to_color(self.current?.typ);
+        let next = self.next().iter().map(|&typ| to_color(typ));
+        let queue = std::iter::once(cur).chain(next).collect();
+        let hold = self.held.map(to_color);
+        let mut matrix = blockfish::BasicMatrix::with_cols(self.rules.cols as u16);
+        for (coord, _) in self.matrix() {
+            matrix.set(coord);
+        }
+        Some(Snapshot {
+            queue,
+            hold,
+            matrix,
+        })
+    }
+}
+
+fn to_color(typ: PieceType) -> blockfish::Color {
+    typ.try_into().expect("bug: invalid color")
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 // Matrix
 
 /// Represents a matrix of colored cells.
+#[derive(Clone)]
 struct Matrix {
     /// Number of columns per line.
     cols: u16,
@@ -220,6 +275,7 @@ impl Matrix {
 }
 
 /// Represents a single line in a matrix.
+#[derive(Clone)]
 struct Line {
     /// The cells in this line.
     cells: Vec<CellColor>,
@@ -360,6 +416,7 @@ impl Piece {
 //////////////////////////////////////////////////////////////////////////////////////////
 // Randomizer
 
+#[derive(Clone)]
 struct BagRandomizer {
     bag: Vec<PieceType>,
     queue: Vec<PieceType>,
@@ -408,6 +465,7 @@ impl Iterator for BagRandomizer {
 
 // TODO: configure garbage depth, configure total num lines
 
+#[derive(Clone)]
 struct Cheese {
     rng: ThreadRng,
     cols: u16,

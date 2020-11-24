@@ -7,14 +7,10 @@ mod stacker;
 mod view;
 
 use sdl2::{event::Event, keyboard::Keycode};
-use std::time::Duration;
+use std::{convert::TryFrom, time::Duration};
 use thiserror::Error;
 
-use crate::{
-    controller::{Controller, Input},
-    ruleset::Ruleset,
-    view::View,
-};
+use crate::{controller::Controller, ruleset::Ruleset, view::View};
 
 // Error handling
 
@@ -69,7 +65,7 @@ fn entry() -> Result<()> {
     let ttf = sdl2::ttf::init()?;
 
     let window = video
-        .window("rust-sdl2 demo", 900, 600)
+        .window("Blockfish (v0.3.1)", 900, 600)
         .position_centered()
         .build()?;
     let mut canvas = window.into_canvas().build()?;
@@ -87,14 +83,17 @@ fn entry() -> Result<()> {
             match event {
                 Event::Quit { .. } => break 'running,
                 Event::KeyDown { keycode, .. } => {
-                    if let Some(input) = keycode.and_then(keycode_to_input) {
-                        ctl.on_input(input);
+                    match keycode.and_then(|c| Input::try_from(c).ok()) {
+                        Some(Input::Game(i)) => ctl.on_game_input(i),
+                        Some(Input::User(i)) => ctl.on_user_input(i),
+                        None => {}
                     }
                 }
                 _ => {}
             }
         }
 
+        ctl.poll_engine();
         ctl.view().draw(&mut canvas);
         canvas.present();
         std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
@@ -103,16 +102,26 @@ fn entry() -> Result<()> {
     Ok(())
 }
 
-// TODO: configurable controls
-fn keycode_to_input(key: Keycode) -> Option<Input> {
-    match key {
-        Keycode::Space => Some(Input::HardDrop),
-        Keycode::Down => Some(Input::SonicDrop),
-        Keycode::Left => Some(Input::Left),
-        Keycode::Right => Some(Input::Right),
-        Keycode::Z => Some(Input::CCW),
-        Keycode::X => Some(Input::CW),
-        Keycode::LShift => Some(Input::Hold),
-        _ => None,
+enum Input {
+    Game(blockfish::Input),
+    User(controller::UserInput),
+}
+
+impl TryFrom<Keycode> for Input {
+    type Error = ();
+
+    fn try_from(code: Keycode) -> std::result::Result<Self, ()> {
+        match code {
+            Keycode::Space => Ok(Input::Game(blockfish::Input::HD)),
+            Keycode::Down => Ok(Input::Game(blockfish::Input::SD)),
+            Keycode::Left => Ok(Input::Game(blockfish::Input::Left)),
+            Keycode::Right => Ok(Input::Game(blockfish::Input::Right)),
+            Keycode::Z => Ok(Input::Game(blockfish::Input::CCW)),
+            Keycode::X => Ok(Input::Game(blockfish::Input::CW)),
+            Keycode::LShift => Ok(Input::Game(blockfish::Input::Hold)),
+            Keycode::S => Ok(Input::User(controller::UserInput::NextSuggestion)),
+            Keycode::A => Ok(Input::User(controller::UserInput::PrevSuggestion)),
+            _ => Err(()),
+        }
     }
 }

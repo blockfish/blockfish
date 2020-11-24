@@ -84,13 +84,15 @@ impl Orientation {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, Ord, PartialOrd)]
-#[allow(dead_code)]
+#[repr(u8)]
 pub enum Input {
     Left,
     Right,
     CW,
     CCW,
     Hold,
+    SD,
+    HD,
 }
 
 pub struct RepeatedInputs(Input, usize, usize);
