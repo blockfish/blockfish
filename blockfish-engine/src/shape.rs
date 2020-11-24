@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, convert::TryInto as _};
 
 use crate::{
     basic_matrix,
@@ -125,7 +125,7 @@ impl ShapeTable {
 
 impl std::fmt::Debug for NormalShapeId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}:{}", self.0.0, self.1)
+        write!(f, "{:?}:{}", self.0, self.1)
     }
 }
 
@@ -141,7 +141,7 @@ pub fn srs() -> ShapeTable {
         ($col:expr => [$(($rots:expr, $mat:expr)),* $(,)?]) => {
             $({
                 shapes.insert_norm(
-                    Color($col),
+                    ($col).try_into().unwrap(),
                     NormalShape::new(
                         $mat,
                         $rots.into_iter().collect(),

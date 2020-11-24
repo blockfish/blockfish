@@ -65,7 +65,6 @@ impl BasicMatrix {
     /// Set the given coordinate to become occupied. If the coordinate is out of bounds,
     /// does nothing.
     #[inline(always)]
-    #[allow(unused)]
     pub fn set(&mut self, coord: impl Coord) {
         if let Some((i, j)) = coord.check_coord(self.cols) {
             self.set_(i, j);

@@ -1,10 +1,39 @@
+use std::convert::TryFrom;
+use thiserror::Error;
+
+#[cfg(not(test))]
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
-#[repr(transparent)]
+pub struct Color(char);
+
+#[cfg(test)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Color(pub char);
+
+#[derive(Debug, Error)]
+#[error("not a valid character to represent a block color")]
+pub struct InvalidColorChar;
+
+impl Color {
+    pub fn as_char(&self) -> char {
+        self.0
+    }
+}
+
+impl TryFrom<char> for Color {
+    type Error = InvalidColorChar;
+
+    fn try_from(c: char) -> Result<Self, InvalidColorChar> {
+        if c.is_alphabetic() {
+            Ok(Self(c))
+        } else {
+            Err(InvalidColorChar)
+        }
+    }
+}
 
 impl std::fmt::Debug for Color {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.as_char())
     }
 }
 

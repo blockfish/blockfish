@@ -1,4 +1,7 @@
-use std::io::{BufRead, Write};
+use std::{
+    convert::TryInto as _,
+    io::{BufRead, Write},
+};
 use thiserror::Error;
 
 use crate::{
@@ -68,7 +71,7 @@ impl<'w> SuggestionWriter<'w> {
         let score = sugg.score;
         self.line.clear();
         self.line.extend(inputs);
-        write!(&mut self.line, ". {}\n", score).expect("formatting error");
+        writeln!(&mut self.line, ". {}", score).expect("formatting error");
         self.writer
             .write_all(self.line.as_bytes())
             .map_err(Error::WriteIo)?;
@@ -163,37 +166,28 @@ impl SnapshotParser {
 
 /// Parses an ASCII specification of the hold piece.
 fn parse_hold(line: &str) -> Option<Color> {
-    for c in line.chars() {
-        if c.is_alphabetic() {
-            return Some(Color(c));
-        }
-    }
-    None
+    line.chars().filter_map(|c| c.try_into().ok()).next()
 }
 
 /// Parses an ASCII specification of the next queue. Appends all specified pieces in the
 /// queue to the given `Vec`.
 fn parse_queue(line: &str, queue: &mut Vec<Color>) -> Result<()> {
-    let mut any = false;
-    for c in line.chars() {
-        if c.is_alphabetic() {
-            queue.push(Color(c));
-            any = true;
-        }
+    queue.extend(
+        line.chars()
+            .filter_map(|c| -> Option<Color> { c.try_into().ok() }),
+    );
+    if queue.is_empty() {
+        return Err(Error::EmptyQueue);
     }
-    if any {
-        Ok(())
-    } else {
-        Err(Error::EmptyQueue)
-    }
+    Ok(())
 }
 
 /// Parses an ASCII specification of a row of the matrix. Appends cell information to the
 /// given `Vec`.
 fn parse_matrix_row(line: &str, row: &mut Vec<Option<Color>>) {
     for c in line.chars() {
-        if c.is_alphabetic() {
-            row.push(Some(Color(c)));
+        if let Ok(color) = c.try_into() {
+            row.push(Some(color));
         } else if !c.is_whitespace() {
             row.push(None);
         }
