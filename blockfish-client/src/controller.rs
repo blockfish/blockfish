@@ -3,7 +3,7 @@ use crate::{
     stacker::{PieceType, Stacker},
     view::View,
 };
-use blockfish::Input;
+use blockfish::{Input, Suggestion};
 use std::rc::Rc;
 
 /// Holds both the view state and the game state, and bridges the gap between them by
@@ -137,11 +137,9 @@ impl<'v> Controller<'v> {
     /// has.
     pub fn poll_engine(&mut self) {
         if let Some(eng) = self.engine.as_mut() {
-            if let Some(suggs) = eng.poll() {
-                self.suggestions.set(&eng.stacker, suggs);
+            if eng.poll_done(&mut self.suggestions) {
                 self.engine = None;
-            } else {
-                self.suggestions.clear();
+                log::trace!("engine process finished");
             }
             self.update_view();
         }
@@ -149,7 +147,9 @@ impl<'v> Controller<'v> {
 
     /// Begin running the engine in the background.
     fn consult_engine(&mut self) {
+        self.suggestions.clear();
         self.engine = ai(&self.stacker);
+        log::trace!("consulting engine...");
         self.poll_engine();
     }
 }
@@ -214,8 +214,8 @@ impl Stats {
 
 /// Maintains the current best suggestions found by the engine.
 struct Suggestions {
-    infos: Vec<SuggestionInfo>,
     selected: Option<usize>,
+    infos: Vec<SuggestionInfo>,
 }
 
 /// Represents a single suggestion by the engine.
@@ -253,26 +253,6 @@ impl Suggestions {
         self.selected = None;
     }
 
-    /// Sets the suggestions given by `list`, and ranks them. Uses `stacker` to derive the
-    /// final piece location after performing the inputs specified by the suggestion.
-    fn set(&mut self, stacker: &Stacker, list: Vec<blockfish::Suggestion>) {
-        self.clear();
-        for sugg in list {
-            let mut stacker = stacker.clone();
-            stacker.run(sugg.inputs);
-            if let Some((typ, _, j, r, i)) = stacker.current_piece() {
-                self.infos.push(SuggestionInfo {
-                    score: sugg.score,
-                    piece: (typ, i, j, r),
-                });
-            }
-        }
-        if self.infos.len() > 0 {
-            self.infos.sort_by_key(|s| s.score);
-            self.selected = Some(0);
-        }
-    }
-
     /// Toggle the currently viewed suggestion, moving forwards or backwards in the list according
     /// to the sign of `dir`. Returns `true` if the selection was modified as a result.
     fn toggle(&mut self, dir: isize) -> bool {
@@ -296,6 +276,35 @@ impl Suggestions {
     }
 }
 
+impl Extend<SuggestionInfo> for Suggestions {
+    fn extend<I>(&mut self, iter: I)
+    where
+        I: IntoIterator<Item = SuggestionInfo>,
+    {
+        for info in iter {
+            let mut infos = self.infos.iter().enumerate();
+            match infos.find(|(_, prev)| prev.piece == info.piece) {
+                Some((idx, prev)) => {
+                    log::trace!(
+                        "adjusted #{} score: {} => {}",
+                        idx + 1,
+                        prev.score,
+                        info.score
+                    );
+                    self.infos[idx] = info;
+                }
+                None => {
+                    self.infos.push(info);
+                }
+            }
+        }
+        if !self.infos.is_empty() {
+            self.infos.sort_by_key(|s| s.score);
+            self.selected.get_or_insert(0);
+        }
+    }
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////
 // Engine background process
 
@@ -303,8 +312,6 @@ impl Suggestions {
 struct EngineProcess {
     /// The incoming stream of suggestions.
     stream: blockfish::SuggestionsIter,
-    /// The resulting suggestions as they are accumulated.
-    results: Vec<blockfish::Suggestion>,
     /// The game state at the time of suggestions being generated.
     stacker: Box<Stacker>,
 }
@@ -317,30 +324,38 @@ fn ai(stacker: &Stacker) -> Option<EngineProcess> {
     Some(EngineProcess {
         stream: blockfish::ai(snapshot),
         stacker: Box::new(stacker.clone()),
-        results: vec![],
     })
 }
 
 impl EngineProcess {
-    /// Poll the engine to check on its process. On completion, returns the entire list of
-    /// suggestions. `poll` should not be called again after it returns successfully.
-    // TODO: incremental suggestion list
-    fn poll(&mut self) -> Option<Vec<blockfish::Suggestion>> {
+    /// Polls the engine for completion, returning `true` if it is done. In the meantime,
+    /// appends any suggestions received to `sink`.
+    fn poll_done(&mut self, sink: &mut impl Extend<SuggestionInfo>) -> bool {
         loop {
             match self.stream.try_recv() {
                 Ok(sugg) => {
-                    self.results.push(sugg);
-                    // keep polling
+                    let info = self.suggestion_info(sugg);
+                    sink.extend(std::iter::once(info));
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    // still waiting for results
-                    return None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    // done
-                    return Some(std::mem::take(&mut self.results));
+                Err(status) => {
+                    return status == std::sync::mpsc::TryRecvError::Disconnected;
                 }
             }
+        }
+    }
+
+    /// Converts `sugg` into a `SuggestionInfo` by simulating the inputs on the internal
+    /// game state.
+    fn suggestion_info(&self, sugg: Suggestion) -> SuggestionInfo {
+        let mut stacker = (*self.stacker).clone();
+        stacker.run(sugg.inputs);
+        // NOTE: we're using the ghost piece row, not the current row.
+        let (typ, _, j, r, i) = stacker
+            .current_piece()
+            .expect("bug: suggestion leads to no piece");
+        SuggestionInfo {
+            score: sugg.score,
+            piece: (typ, i, j, r),
         }
     }
 }

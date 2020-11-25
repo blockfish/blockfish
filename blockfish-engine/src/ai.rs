@@ -3,6 +3,8 @@ use crate::{
     matrix::BasicMatrix,
     shape::{srs, NormalShape, NormalShapeId, ShapeTable},
 };
+use rand::Rng as _;
+use std::cell::RefCell;
 
 // Data types
 
@@ -25,32 +27,67 @@ pub type SuggestionsIter = std::sync::mpsc::Receiver<Suggestion>;
 
 pub fn ai(snap: Snapshot) -> SuggestionsIter {
     let srs = srs();
-    let mut queue = snap.queue.into_iter();
-    let current = queue.next().expect("bug: empty queue");
-    let matrix = snap.matrix;
-
+    let current = *snap.queue.get(0).expect("bug: empty queue");
     let (tx, rx) = std::sync::mpsc::sync_channel(0);
     std::thread::spawn(move || {
-        let places = all_valid_places(&srs, current, &matrix);
-        let mut tmp_mat = matrix.clone();
-        for place in places {
-            let norm = srs.get_norm(place.norm_id);
-            tmp_mat.clone_from(&matrix);
-            norm.blit_to(&mut tmp_mat, place.row, place.col);
-            tmp_mat.sift_rows();
-            let sugg = Suggestion {
-                inputs: norm.finesse(place.col).collect(),
-                score: negative_space(&tmp_mat),
-            };
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            if tx.send(sugg).is_err() {
-                log::warn!("rx dropped; stopping iteration");
-                break;
+        let ai = AI {
+            rng: RefCell::new(rand::thread_rng()),
+            srs: &srs,
+            matrix: &snap.matrix,
+            piece: current,
+        };
+        for _ in 0..2 {
+            for place in ai.placements() {
+                let sugg = Suggestion {
+                    inputs: ai.finesse_inputs(&place),
+                    score: ai.score(&place),
+                };
+                if tx.send(sugg).is_err() {
+                    log::warn!("rx dropped; stopping iteration");
+                    return;
+                }
             }
         }
     });
 
     rx
+}
+
+struct AI<'m> {
+    rng: RefCell<rand::rngs::ThreadRng>,
+    srs: &'m ShapeTable,
+    matrix: &'m BasicMatrix,
+    piece: Color,
+}
+
+impl<'m> AI<'m> {
+    fn placements(&self) -> impl Iterator<Item = Place> + 'm {
+        let srs = self.srs;
+        let matrix = self.matrix;
+        srs.iter_norms_by_color(self.piece)
+            .flat_map(move |norm_id| {
+                let norm = srs.get_norm(norm_id);
+                (0..(matrix.cols() + 1 - norm.cols())).map(move |col| {
+                    let row = sonic_drop(matrix, norm, col);
+                    Place { norm_id, row, col }
+                })
+            })
+    }
+
+    fn finesse_inputs(&self, place: &Place) -> Vec<Input> {
+        let norm = self.srs.get_norm(place.norm_id);
+        norm.finesse(place.col).collect()
+    }
+
+    fn score(&self, place: &Place) -> i64 {
+        let norm = self.srs.get_norm(place.norm_id);
+        let mut matrix = self.matrix.clone();
+        norm.blit_to(&mut matrix, place.row, place.col);
+        matrix.sift_rows();
+        let ns = negative_space(&matrix);
+        let rs = self.rng.borrow_mut().gen_range(-20, 20);
+        ns + rs
+    }
 }
 
 /// Represents a placement of a particular shape.
@@ -65,21 +102,6 @@ impl std::fmt::Debug for Place {
         let Place { norm_id, row, col } = self;
         write!(f, "{:?}, column {}, row {}", norm_id, col, row)
     }
-}
-
-/// Returns all valid `Place`s for pieces of `color` onto `matrix`.
-fn all_valid_places<'a>(
-    srs: &'a ShapeTable,
-    color: Color,
-    matrix: &'a BasicMatrix,
-) -> impl Iterator<Item = Place> + 'a {
-    srs.iter_norms_by_color(color).flat_map(move |norm_id| {
-        let norm = srs.get_norm(norm_id);
-        (0..(matrix.cols() + 1 - norm.cols())).map(move |col| {
-            let row = sonic_drop(matrix, norm, col);
-            Place { norm_id, row, col }
-        })
-    })
 }
 
 /// Returns the row after sonic-dropping `shape` onto `matrix` at column `j0`.
