@@ -10,6 +10,8 @@ use thiserror::Error;
 
 use crate::{controller::Controller, view::View};
 
+static WINDOW_TITLE: &'static str = "Blockfish (v0.4.3)";
+
 // Error handling
 
 #[derive(Debug, Error)]
@@ -63,7 +65,7 @@ fn entry() -> Result<()> {
     let ttf = sdl2::ttf::init()?;
 
     let window = video
-        .window("Blockfish (v0.3.1)", 900, 600)
+        .window(WINDOW_TITLE, 900, 600)
         .position_centered()
         .build()?;
     let mut canvas = window.into_canvas().build()?;
