@@ -84,12 +84,6 @@ pub struct ShapeTable {
     by_color: BTreeMap<Color, Vec<NormalShape>>,
 }
 
-/// Lightweight reference to a normalized shape in a `ShapeTable`. This ID can be used to
-/// uniquely represent a particular shape without passing around the pointer to the shape
-/// itself. It is an error to mix shape ID's between tables that are not identical.
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct NormalShapeId(Color, usize);
-
 impl ShapeTable {
     /// Constructs an empty new `ShapeTable`.
     fn new() -> Self {
@@ -107,21 +101,28 @@ impl ShapeTable {
         NormalShapeId(color, idx)
     }
 
-    /// Returns the `NormalShape` identified by `id`. Panics if `id` is invalid; this only
-    /// occurs if the value `id` did not arise from this particular table.
-    pub fn get_norm(&self, id: NormalShapeId) -> &NormalShape {
-        self.by_color
-            .get(&id.0)
-            .and_then(|norms| norms.get(id.1))
-            .expect("invalid shape id")
-    }
-
     /// Lists all `NormalShapeId`s for color `Color`.
     pub fn iter_norms_by_color(&self, color: Color) -> impl Iterator<Item = NormalShapeId> {
         let len = self.by_color.get(&color).map(Vec::len).unwrap_or(0);
         (0..len).map(move |idx| NormalShapeId(color, idx))
     }
 }
+
+impl std::ops::Index<NormalShapeId> for ShapeTable {
+    type Output = NormalShape;
+    fn index(&self, id: NormalShapeId) -> &NormalShape {
+        self.by_color
+            .get(&id.0)
+            .and_then(|norms| norms.get(id.1))
+            .expect("invalid shape id")
+    }
+}
+
+/// Lightweight reference to a normalized shape in a `ShapeTable`. This ID can be used to
+/// uniquely represent a particular shape without passing around the pointer to the shape
+/// itself. It is an error to mix shape ID's between tables that are not identical.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct NormalShapeId(Color, usize);
 
 impl std::fmt::Debug for NormalShapeId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -221,8 +222,8 @@ mod test {
         use Input::*;
         let srs = srs();
         let mut i_ids = srs.iter_norms_by_color(Color('I'));
-        let i0 = srs.get_norm(i_ids.next().unwrap());
-        let i1 = srs.get_norm(i_ids.next().unwrap());
+        let i0 = &srs[i_ids.next().unwrap()];
+        let i1 = &srs[i_ids.next().unwrap()];
         assert_eq!(i0.matrix.rows(), 1);
         assert_eq!(i0.matrix.cols(), 4);
         assert_eq!(i1.matrix.rows(), 4);
@@ -262,8 +263,8 @@ mod test {
         let srs = srs();
         for &color in [Color('S'), Color('Z')].iter() {
             let mut sz_ids = srs.iter_norms_by_color(color);
-            let sz0 = srs.get_norm(sz_ids.next().unwrap());
-            let sz1 = srs.get_norm(sz_ids.next().unwrap());
+            let sz0 = &srs[sz_ids.next().unwrap()];
+            let sz1 = &srs[sz_ids.next().unwrap()];
             assert_eq!(sz0.matrix.rows(), 2);
             assert_eq!(sz0.matrix.cols(), 3);
             assert_eq!(sz1.matrix.rows(), 3);
@@ -302,19 +303,16 @@ mod test {
     fn test_bottom() {
         let srs = srs();
         let t2 = srs.iter_norms_by_color(Color('T')).nth(2).unwrap();
-        let t2 = srs.get_norm(t2);
-        assert_eq!(t2.bottom(0), 1);
-        assert_eq!(t2.bottom(1), 0);
-        assert_eq!(t2.bottom(2), 1);
+        assert_eq!(srs[t2].bottom(0), 1);
+        assert_eq!(srs[t2].bottom(1), 0);
+        assert_eq!(srs[t2].bottom(2), 1);
 
         let s1 = srs.iter_norms_by_color(Color('S')).nth(1).unwrap();
-        let s1 = srs.get_norm(s1);
-        assert_eq!(s1.bottom(0), 1);
-        assert_eq!(s1.bottom(1), 0);
+        assert_eq!(srs[s1].bottom(0), 1);
+        assert_eq!(srs[s1].bottom(1), 0);
 
         let z1 = srs.iter_norms_by_color(Color('Z')).nth(1).unwrap();
-        let z1 = srs.get_norm(z1);
-        assert_eq!(z1.bottom(0), 0);
-        assert_eq!(z1.bottom(1), 1);
+        assert_eq!(srs[z1].bottom(0), 0);
+        assert_eq!(srs[z1].bottom(1), 1);
     }
 }
