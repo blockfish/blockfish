@@ -12,9 +12,11 @@ required-features = ["repl"]
 [features]
 default = []
 repl = ["env_logger"]
+slow-tests = []
 
 [dependencies]
 thiserror = "1.0"
 log = "0.4.8"
 env_logger = { version = "0.8", optional = true }
 rand = "0.7"
+red_union_find = "0.2.5"

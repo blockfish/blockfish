@@ -116,6 +116,7 @@ impl<'v> Controller<'v> {
             }
             Input::Hold => {
                 if self.stacker.hold() {
+                    self.consult_engine();
                     self.update_view();
                 }
             }
@@ -321,8 +322,9 @@ struct EngineProcess {
 // TODO: look into deriving a Stacker from a Snapshot?
 fn ai(stacker: &Stacker) -> Option<EngineProcess> {
     let snapshot = stacker.to_snapshot()?;
+    let cfg = blockfish::Config::default();
     Some(EngineProcess {
-        stream: blockfish::ai(snapshot),
+        stream: blockfish::ai(cfg, snapshot),
         stacker: Box::new(stacker.clone()),
     })
 }

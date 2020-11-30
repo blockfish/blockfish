@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, convert::TryInto as _};
 
 use crate::{
     basic_matrix,
-    common::{Color, Input, Orientation, RepeatedInputs},
+    common::{Color, Orientation},
     matrix::BasicMatrix,
 };
 
@@ -52,21 +52,19 @@ impl NormalShape {
             .expect("bug: unoccupied column")
     }
 
-    /// Computes the minimum input sequence to move this shape from spawn to column
-    /// `targ_col`.
-    // TODO: DAS-finesse
-    pub fn finesse(&self, targ_col: u16) -> impl Iterator<Item = Input> {
-        self.spawn_col
-            .iter()
-            .map(|(&ori, &spawn_col)| {
-                (
-                    RepeatedInputs::rotate(ori),
-                    RepeatedInputs::horizontal(spawn_col, targ_col),
-                )
-            })
-            .min_by_key(|(r, h)| r.len() + h.len())
-            .map(|(r, h)| r.chain(h))
-            .expect("unreachable: shape w/o orientations")
+    /// Returns the orientations that lead to this normalized form.
+    pub fn orientations<'a>(&'a self) -> impl Iterator<Item = Orientation> + 'a {
+        self.spawn_col.keys().cloned()
+    }
+
+    /// Returns the absolute column of this piece after rotating to the given orientation
+    /// directly after spawn. For instance, the S and Z pieces are at different columns in
+    /// the R1 and R3 orientations.
+    pub fn spawn_col(&self, ori: Orientation) -> u16 {
+        *self
+            .spawn_col
+            .get(&ori)
+            .expect("invalid orientation for this shape")
     }
 
     /// Blit this shape onto the matrix `tgt` with origin `(i,j)`.
@@ -123,6 +121,12 @@ impl std::ops::Index<NormalShapeId> for ShapeTable {
 /// itself. It is an error to mix shape ID's between tables that are not identical.
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct NormalShapeId(Color, usize);
+
+impl NormalShapeId {
+    pub fn color(&self) -> Color {
+        self.0
+    }
+}
 
 impl std::fmt::Debug for NormalShapeId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -198,13 +202,6 @@ pub fn srs() -> ShapeTable {
 mod test {
     pub use super::*;
 
-    fn all_finesse(norm: &NormalShape) -> Vec<Vec<Input>> {
-        let num_cols = 10 - norm.cols() + 1;
-        (0..num_cols)
-            .map(|col| norm.finesse(col).collect())
-            .collect()
-    }
-
     #[test]
     fn test_srs_count() {
         let srs = srs();
@@ -215,88 +212,6 @@ mod test {
         assert_eq!(srs.iter_norms_by_color(Color('I')).count(), 2);
         assert_eq!(srs.iter_norms_by_color(Color('S')).count(), 2);
         assert_eq!(srs.iter_norms_by_color(Color('Z')).count(), 2);
-    }
-
-    #[test]
-    fn test_i_finesse() {
-        use Input::*;
-        let srs = srs();
-        let mut i_ids = srs.iter_norms_by_color(Color('I'));
-        let i0 = &srs[i_ids.next().unwrap()];
-        let i1 = &srs[i_ids.next().unwrap()];
-        assert_eq!(i0.matrix.rows(), 1);
-        assert_eq!(i0.matrix.cols(), 4);
-        assert_eq!(i1.matrix.rows(), 4);
-        assert_eq!(i1.matrix.cols(), 1);
-        assert_eq!(
-            all_finesse(i0),
-            vec![
-                vec![Left, Left, Left],
-                vec![Left, Left],
-                vec![Left],
-                vec![],
-                vec![Right],
-                vec![Right, Right],
-                vec![Right, Right, Right],
-            ]
-        );
-        assert_eq!(
-            all_finesse(i1),
-            vec![
-                vec![CCW, Left, Left, Left, Left],
-                vec![CCW, Left, Left, Left],
-                vec![CCW, Left, Left],
-                vec![CCW, Left],
-                vec![CCW],
-                vec![CW],
-                vec![CW, Right],
-                vec![CW, Right, Right],
-                vec![CW, Right, Right, Right],
-                vec![CW, Right, Right, Right, Right],
-            ]
-        );
-    }
-
-    #[test]
-    fn test_sz_finesse() {
-        use Input::*;
-        let srs = srs();
-        for &color in [Color('S'), Color('Z')].iter() {
-            let mut sz_ids = srs.iter_norms_by_color(color);
-            let sz0 = &srs[sz_ids.next().unwrap()];
-            let sz1 = &srs[sz_ids.next().unwrap()];
-            assert_eq!(sz0.matrix.rows(), 2);
-            assert_eq!(sz0.matrix.cols(), 3);
-            assert_eq!(sz1.matrix.rows(), 3);
-            assert_eq!(sz1.matrix.cols(), 2);
-            assert_eq!(
-                all_finesse(sz0),
-                vec![
-                    vec![Left, Left, Left],
-                    vec![Left, Left],
-                    vec![Left],
-                    vec![],
-                    vec![Right],
-                    vec![Right, Right],
-                    vec![Right, Right, Right],
-                    vec![Right, Right, Right, Right],
-                ]
-            );
-            assert_eq!(
-                all_finesse(sz1),
-                vec![
-                    vec![CCW, Left, Left, Left],
-                    vec![CCW, Left, Left],
-                    vec![CCW, Left],
-                    vec![CCW],
-                    vec![CW],
-                    vec![CW, Right],
-                    vec![CW, Right, Right],
-                    vec![CW, Right, Right, Right],
-                    vec![CW, Right, Right, Right, Right],
-                ]
-            );
-        }
     }
 
     #[test]

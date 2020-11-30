@@ -3,8 +3,8 @@ mod common;
 mod matrix;
 mod shape;
 
-pub use ai::{ai, Snapshot, Suggestion, SuggestionsIter};
-pub use common::{Color, Input};
+pub use ai::{ai, Config, Snapshot, Suggestion, SuggestionsIter};
+pub use common::{Color, Input, Orientation};
 pub use matrix::BasicMatrix;
 
 #[cfg(feature = "repl")]

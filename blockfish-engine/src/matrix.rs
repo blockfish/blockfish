@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct BasicMatrix {
     // Number of columns.
@@ -149,6 +151,25 @@ impl BasicMatrix {
             .find(|&i| self.get((i, j)))
             .map(|i| i + 1)
             .unwrap_or(0)
+    }
+
+    /// Returns the extents of every gap in row `i`.
+    pub fn gaps(&self, i: u16) -> impl Iterator<Item = Range<u16>> {
+        let cols = self.cols();
+        let row_bits = self.data[i as usize];
+        // fill in the rightmost wall, e.g. if the row is "xx.x.." turn it into ""xx.x..x".
+        let row_bits = row_bits | (1 << cols);
+        // iterator *inclusive* so we hit the rightmost wall
+        (0..=cols)
+            .scan(None, move |gap, j| {
+                if row_bits & (1 << j) != 0 {
+                    Some(gap.take())
+                } else {
+                    gap.get_or_insert(j..j).end += 1;
+                    Some(None)
+                }
+            })
+            .flatten()
     }
 }
 
@@ -328,5 +349,23 @@ mod test {
         m.set((0u16, 1u16));
         m.set((0u16, 2u16));
         assert_eq!(m.sift_rows(), 1);
+    }
+
+    #[test]
+    fn test_bm_gaps() {
+        let (xx, __) = (true, false);
+        let mat = basic_matrix![
+            [__, __, __, __, __, __, __, __],
+            [xx, xx, xx, xx, xx, xx, xx, xx],
+            [xx, xx, __, __, xx, xx, xx, xx],
+            [xx, xx, __, __, xx, xx, __, xx],
+            [__, __, __, __, xx, xx, __, __],
+        ];
+        let gaps = |row| mat.gaps(row).collect::<Vec<_>>();
+        assert_eq!(gaps(0), [0..8]);
+        assert_eq!(gaps(1), []);
+        assert_eq!(gaps(2), [2..4]);
+        assert_eq!(gaps(3), [2..4, 6..7]);
+        assert_eq!(gaps(4), [0..4, 6..8]);
     }
 }
