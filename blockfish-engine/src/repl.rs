@@ -5,7 +5,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    ai::{ai, Snapshot, Suggestion},
+    ai::{ai, Config, Snapshot, Suggestion},
     common::{Color, Input},
     matrix::BasicMatrix,
 };
@@ -28,7 +28,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 // REPL
 
-pub fn repl() -> Result<()> {
+pub fn repl(cfg: Config) -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
@@ -39,7 +39,7 @@ pub fn repl() -> Result<()> {
             Some(parsed_snap) => parsed_snap,
             None => break,
         };
-        let suggs = ai(snap);
+        let suggs = ai(cfg.clone(), snap);
         for sugg in suggs {
             writer.write(sugg)?;
         }

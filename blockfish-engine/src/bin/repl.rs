@@ -6,7 +6,8 @@ fn main() {
         .target(env_logger::Target::Stderr)
         .init();
 
-    std::process::exit(match blockfish::repl() {
+    let cfg = blockfish::Config::default();
+    std::process::exit(match blockfish::repl(cfg) {
         Ok(_) => 0,
         Err(err) => {
             display_error(&err);

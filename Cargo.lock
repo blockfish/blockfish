@@ -33,9 +33,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf1de2fe8c75bc145a2f577add951f8134889b4795d47466a54a5c846d691693"
 
 [[package]]
+name = "block-stacker"
+version = "0.1.0"
+dependencies = [
+ "rand",
+]
+
+[[package]]
 name = "blockfish"
 version = "0.1.0"
 dependencies = [
+ "block-stacker",
  "env_logger 0.8.2",
  "log",
  "rand",
@@ -47,11 +55,11 @@ dependencies = [
 name = "blockfish-client"
 version = "0.1.0"
 dependencies = [
+ "block-stacker",
  "blockfish",
  "fontconfig",
  "log",
  "pretty_env_logger",
- "rand",
  "sdl2",
  "thiserror",
 ]

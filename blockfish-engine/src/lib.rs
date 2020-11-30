@@ -12,3 +12,9 @@ mod repl;
 
 #[cfg(feature = "repl")]
 pub use repl::{repl, Error as ReplError};
+
+#[cfg(feature = "block-stacker")]
+mod stacker_util;
+
+#[cfg(feature = "block-stacker")]
+pub use stacker_util::StackerExt;

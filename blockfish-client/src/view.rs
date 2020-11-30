@@ -1,11 +1,11 @@
+use crate::resources::Resources;
+use block_stacker::Ruleset;
 use sdl2::{
     pixels::Color,
     rect::Rect,
     render::{Canvas, RenderTarget, Texture},
 };
 use std::{collections::HashMap, rc::Rc};
-
-use crate::{resources::Resources, ruleset::Ruleset};
 
 //////////////////////////////////////////////////////////////////////////////////////////
 // View

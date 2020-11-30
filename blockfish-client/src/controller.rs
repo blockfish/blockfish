@@ -1,10 +1,6 @@
-use crate::{
-    ruleset::Ruleset,
-    stacker::{PieceType, Stacker},
-    view::View,
-};
-use blockfish::{Input, Suggestion};
-use std::rc::Rc;
+use crate::view::View;
+use block_stacker::{PieceType, Stacker};
+use blockfish::{Input, StackerExt as _, Suggestion};
 
 /// Holds both the view state and the game state, and bridges the gap between them by
 /// handling input events and updating the states accordingly.
@@ -25,11 +21,11 @@ pub enum UserInput {
 }
 
 impl<'v> Controller<'v> {
-    /// Constructs a new controller with the given ruleset.
-    pub fn new(rules: Rc<Ruleset>, view: View<'v>) -> Self {
+    /// Constructs a new controller with the game state `stacker` and view `view`.
+    pub fn new(stacker: Stacker, view: View<'v>) -> Self {
         let mut ctl = Controller {
             view,
-            stacker: Stacker::new(rules),
+            stacker,
             stats: Stats::new(),
             suggestions: Suggestions::new(),
             engine: None,
@@ -321,7 +317,7 @@ struct EngineProcess {
 /// Returns `None` if a snapshot could not be produced by the state.
 // TODO: look into deriving a Stacker from a Snapshot?
 fn ai(stacker: &Stacker) -> Option<EngineProcess> {
-    let snapshot = stacker.to_snapshot()?;
+    let snapshot = stacker.snapshot()?;
     let cfg = blockfish::Config::default();
     Some(EngineProcess {
         stream: blockfish::ai(cfg, snapshot),

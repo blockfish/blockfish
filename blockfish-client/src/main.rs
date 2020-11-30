@@ -2,15 +2,13 @@
 
 mod controller;
 mod resources;
-mod ruleset;
-mod stacker;
 mod view;
 
 use sdl2::{event::Event, keyboard::Keycode};
 use std::{convert::TryFrom, time::Duration};
 use thiserror::Error;
 
-use crate::{controller::Controller, ruleset::Ruleset, view::View};
+use crate::{controller::Controller, view::View};
 
 // Error handling
 
@@ -70,11 +68,11 @@ fn entry() -> Result<()> {
         .build()?;
     let mut canvas = window.into_canvas().build()?;
     let texture_creator = canvas.texture_creator();
-
-    let rules = Ruleset::guideline();
     let res = resources::Resources::load(&ttf)?;
-    let view = View::new(rules.clone(), res, &canvas, &texture_creator);
-    let mut ctl = Controller::new(rules, view);
+
+    let stacker = block_stacker::Stacker::new(block_stacker::Ruleset::guideline());
+    let view = View::new(stacker.ruleset().clone(), res, &canvas, &texture_creator);
+    let mut ctl = Controller::new(stacker, view);
 
     let mut event_pump = sdl.event_pump().map_err(Error::Sdl)?;
 

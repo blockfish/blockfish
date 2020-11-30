@@ -6,13 +6,16 @@ edition = "2018"
 
 [dependencies]
 sdl2 = { version = "0.34", features = ["ttf"] }
-rand = "0.7"
 thiserror = "1.0"
 log = "0.4.8"
 pretty_env_logger = "0.4"
 
 [dependencies.blockfish]
 path = "../blockfish-engine"
+features = ["block-stacker"]
+
+[dependencies.block-stacker]
+path = "../block-stacker"
 
 [build-dependencies]
 fontconfig = "0.2"

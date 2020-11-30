@@ -1,7 +1,6 @@
-use crate::ruleset::Ruleset;
-use blockfish::{Input, Snapshot};
+use crate::{ruleset::Ruleset, CellColor, PieceType};
 use rand::{rngs::ThreadRng, Rng as _};
-use std::{convert::TryInto as _, rc::Rc};
+use std::rc::Rc;
 
 //////////////////////////////////////////////////////////////////////////////////////////
 // Game logic
@@ -15,11 +14,6 @@ pub struct Stacker {
     queue: BagRandomizer,
     held: Option<PieceType>,
 }
-
-/// One of `"ILJSZTO"`
-pub type PieceType = char;
-/// One of `"ILJSZTOGH "`
-pub type CellColor = char;
 
 impl Stacker {
     /// Constructs a new stacker game state with ruleset `rules`.
@@ -37,6 +31,11 @@ impl Stacker {
         stacker
     }
 
+    /// Returns the ruleset used by this stacker.
+    pub fn ruleset(&self) -> &Rc<Ruleset> {
+        &self.rules
+    }
+
     /// Returns a list of all occupied cells in the matrix.
     pub fn matrix<'a>(&'a self) -> impl Iterator<Item = ((u16, u16), PieceType)> + 'a {
         self.matrix.iter()
@@ -46,6 +45,11 @@ impl Stacker {
     fn cheese(&mut self) {
         let count = self.rules.garbage_height - self.matrix.garbage_rows();
         self.matrix.insert_below((&mut self.cheese).take(count));
+    }
+
+    /// Returns the current piece's typ, if any.
+    pub fn current_piece_type(&self) -> Option<PieceType> {
+        self.current.map(|pc| pc.typ)
     }
 
     /// Returns `(color, row, col, rot, ghost_row)` for the current piece, if any.
@@ -114,6 +118,7 @@ impl Stacker {
             None => (0, 0),
         };
         if n == 0 {
+            // cheese when combo broken
             self.cheese();
         }
         self.new_piece();
@@ -123,7 +128,7 @@ impl Stacker {
     /// Hold the current piece. Returns `true` if the piece was held, or `false` if the
     /// hold queue was just used and cannot be swapped again.
     pub fn hold(&mut self) -> bool {
-        let prev = self.current.as_ref().map(|pc| pc.typ);
+        let prev = self.current_piece_type();
         if let Some(held) = std::mem::replace(&mut self.held, prev) {
             // TODO: prevent repeat holds
             self.current = Some(Piece::new(&self.rules, held));
@@ -139,57 +144,20 @@ impl Stacker {
         self.current = self.queue.next().map(|typ| Piece::new(&self.rules, typ));
         self.queue.ensure(self.rules.previews);
     }
-
-    /// Runs each of the given inputs.
-    pub fn run(&mut self, inputs: impl IntoIterator<Item = Input>) {
-        for inp in inputs {
-            match inp {
-                Input::Left => {
-                    self.move_horizontal(-1);
-                }
-                Input::Right => {
-                    self.move_horizontal(1);
-                }
-                Input::CCW => {
-                    self.rotate(-1);
-                }
-                Input::CW => {
-                    self.rotate(1);
-                }
-                Input::Hold => {
-                    self.hold();
-                }
-                Input::HD => {
-                    self.hard_drop();
-                }
-                Input::SD => {
-                    self.sonic_drop();
-                }
-            }
-        }
-    }
-
-    /// Returns a snapshot of the game state. Returns `None` if there is no current piece,
-    /// so the snapshot would be invalid.
-    pub fn to_snapshot(&self) -> Option<Snapshot> {
-        let cur = to_color(self.current?.typ);
-        let next = self.next().iter().map(|&typ| to_color(typ));
-        let queue = std::iter::once(cur).chain(next).collect();
-        let hold = self.held.map(to_color);
-        let mut matrix = blockfish::BasicMatrix::with_cols(self.rules.cols as u16);
-        for (coord, _) in self.matrix() {
-            matrix.set(coord);
-        }
-        Some(Snapshot {
-            queue,
-            hold,
-            matrix,
-        })
-    }
 }
 
-fn to_color(typ: PieceType) -> blockfish::Color {
-    typ.try_into().expect("bug: invalid color")
+impl std::fmt::Debug for Stacker {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "queue: ")?;
+        for &c in self.next() {
+            write!(f, "{}", c)?;
+        }
+        if let Some(c) = self.held() {
+            write!(f, ", hold: {}", c)?;
+        }
+        write!(f, "\n{:?}", self.matrix)?;
+        Ok(())
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -329,6 +297,23 @@ impl Line {
         cells
             .filter(|&(_, cc)| cc != ' ')
             .map(|(j, cc)| (j as u16, cc))
+    }
+}
+
+impl std::fmt::Debug for Matrix {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        for (i, line) in self.lines.iter().rev().enumerate() {
+            if i > 0 {
+                write!(f, "\n|")?;
+            } else {
+                write!(f, "|")?;
+            }
+            for cc in line.cells.iter() {
+                write!(f, "{}", cc)?;
+            }
+            write!(f, "|")?;
+        }
+        Ok(())
     }
 }
 

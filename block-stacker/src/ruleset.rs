@@ -1,3 +1,4 @@
+use super::PieceType;
 use std::{collections::HashMap, rc::Rc};
 
 /// Represents a specification of the game rules, such as the matrix size, the number of
@@ -15,7 +16,7 @@ pub struct Ruleset {
     /// The number of garbage rows continually present.
     pub garbage_height: usize,
     /// The available poly-mino shapes in this ruleset.
-    minos: HashMap<char, PolyMino>,
+    minos: HashMap<PieceType, PolyMino>,
 }
 
 /// Represents the specification of one poly-mino.
@@ -130,19 +131,19 @@ impl Ruleset {
         })
     }
 
-    fn mino(&self, color: char) -> &PolyMino {
-        self.minos.get(&color).expect("bug: no such mino")
+    fn mino(&self, typ: PieceType) -> &PolyMino {
+        self.minos.get(&typ).expect("bug: no such mino")
     }
 
     /// Returns a list of every color of shape per this ruleset.
-    pub fn types<'a>(&'a self) -> impl Iterator<Item = char> + 'a {
+    pub fn types<'a>(&'a self) -> impl Iterator<Item = PieceType> + 'a {
         self.minos.keys().cloned()
     }
 
     /// Returns the relative coords of the shape specified by `color`, at orientation
     /// `rot`.
-    pub fn coords<'a>(&'a self, color: char, rot: i32) -> impl Iterator<Item = (u16, u16)> + 'a {
-        let PolyMino { coords, width, .. } = self.mino(color);
+    pub fn coords<'a>(&'a self, typ: PieceType, rot: i32) -> impl Iterator<Item = (u16, u16)> + 'a {
+        let PolyMino { coords, width, .. } = self.mino(typ);
         coords
             .iter()
             .map(move |&coord| rotate_coord(coord, *width, rot))
@@ -152,7 +153,7 @@ impl Ruleset {
     /// from orientation `rot0` to `rot`.
     pub fn kicks<'a>(
         &'a self,
-        color: char,
+        typ: PieceType,
         rot0: i32,
         rot: i32,
     ) -> impl Iterator<Item = (i16, i16)> + 'a {
@@ -161,7 +162,7 @@ impl Ruleset {
         } else {
             Kick::CCW(normalize_rot(rot))
         };
-        match self.mino(color).kicks.get(&kick) {
+        match self.mino(typ).kicks.get(&kick) {
             Some(kicks) => kicks.as_slice(),
             // in SRS the O kick table is empty, so this fallback case is used.
             None => &[(0, 0)],
@@ -171,8 +172,8 @@ impl Ruleset {
     }
 
     /// Returns the initial spawn coordinates for shape specified by `color`.
-    pub fn spawn(&self, color: char) -> (i16, i16) {
-        self.mino(color).spawn
+    pub fn spawn(&self, typ: PieceType) -> (i16, i16) {
+        self.mino(typ).spawn
     }
 }
 
