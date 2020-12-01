@@ -33,7 +33,7 @@ impl<'s> Iterator for DFS<'s> {
     fn next(&mut self) -> Option<Node> {
         let node = self.nodes.pop()?;
         if node.depth < self.max_depth {
-            self.nodes.extend(node.neighbors(self.stbl, self.scoring));
+            self.nodes.extend(node.successors(self.stbl, self.scoring));
         }
         Some(node)
     }

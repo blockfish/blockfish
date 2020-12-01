@@ -123,9 +123,9 @@ impl std::ops::Index<NormalShapeId> for ShapeTable {
 pub struct NormalShapeId(Color, usize);
 
 impl NormalShapeId {
-    pub fn color(&self) -> Color {
-        self.0
-    }
+    // pub fn color(&self) -> Color {
+    //     self.0
+    // }
 }
 
 impl std::fmt::Debug for NormalShapeId {

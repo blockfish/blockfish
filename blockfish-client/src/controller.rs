@@ -112,7 +112,8 @@ impl<'v> Controller<'v> {
             }
             Input::Hold => {
                 if self.stacker.hold() {
-                    self.consult_engine();
+                    // TODO: ? engine result should be the same after you press hold
+                    // self.consult_engine();
                     self.update_view();
                 }
             }

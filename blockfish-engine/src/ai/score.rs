@@ -1,4 +1,4 @@
-use crate::{BasicMatrix, Snapshot};
+use crate::BasicMatrix;
 use red_union_find::UF;
 use std::ops::Range;
 
@@ -24,9 +24,9 @@ impl Default for ScoreParams {
 /// Computes the "score" for the given snapshot. Lower is better.
 ///
 /// Note: used by A* to compute "h" value (remaining cost heuristic).
-pub fn score(params: &ScoreParams, snapshot: &Snapshot) -> i64 {
-    let rs = (snapshot.matrix.rows() as i64) * params.row_factor;
-    let nss = negative_space_score(&snapshot.matrix) * params.nspace_factor;
+pub fn score(params: &ScoreParams, matrix: &BasicMatrix) -> i64 {
+    let rs = (matrix.rows() as i64) * params.row_factor;
+    let nss = negative_space_score(&matrix) * params.nspace_factor;
     rs + nss
 }
 

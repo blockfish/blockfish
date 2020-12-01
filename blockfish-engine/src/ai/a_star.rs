@@ -31,8 +31,8 @@ impl<'s> Iterator for AStar<'s> {
     type Item = Node;
     fn next(&mut self) -> Option<Node> {
         let node = self.nodes.pop()?.0;
-        let neighbors = node.neighbors(self.stbl, self.scoring);
-        self.nodes.extend(neighbors.map(AStarNode));
+        let succ = node.successors(self.stbl, self.scoring);
+        self.nodes.extend(succ.map(AStarNode));
         Some(node)
     }
 }

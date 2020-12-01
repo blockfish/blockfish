@@ -1,108 +1,118 @@
-use crate::{
-    shape::{NormalShapeId, ShapeTable},
-    Input, Orientation,
-};
+use crate::{ai::Place, shape::ShapeTable, Input, Orientation};
 
-/// Returns optimal finesse inputs to get shape specified by `norm_id` to column `targ_col` from
-/// the spawn location.
+/// Returns optimal finesse inputs to perform the given placement.
 // TODO: tucks/ spins?
-pub fn inputs<'a>(
-    srs: &'a ShapeTable,
-    norm_id: NormalShapeId,
-    targ_col: u16,
-) -> impl Iterator<Item = Input> {
-    let norm = &srs[norm_id];
+pub fn inputs(stbl: &ShapeTable, place: &Place) -> impl Iterator<Item = Input> {
+    let norm = &stbl[place.norm_id];
+    let targ_col = place.col;
+    let did_hold = place.did_hold;
     norm.orientations()
-        .map(|ori| {
-            let spawn_col = norm.spawn_col(ori);
-            (
-                RepeatedInputs::rotate(ori),
-                RepeatedInputs::horizontal(spawn_col, targ_col),
-            )
-        })
-        .min_by_key(|(r, h)| r.len() + h.len())
-        .map(|(r, h)| r.chain(h))
+        .map(|ori| Inputs::new(did_hold, ori, norm.spawn_col(ori), targ_col))
+        .min_by_key(|i| i.len())
         .expect("unreachable: shape has no orientations?")
 }
 
-struct RepeatedInputs(Input, usize, usize);
+struct Inputs {
+    hold: bool,
+    ori: Orientation,
+    taps: i16,
+}
 
-impl RepeatedInputs {
-    /// Iterator of inputs to get from initial orientation to `ori`.
-    fn rotate(ori: Orientation) -> Self {
-        let (inp, cnt) = match ori {
-            Orientation::R0 => (Input::CW, 0),
-            Orientation::R1 => (Input::CW, 1),
-            Orientation::R2 => (Input::CW, 2),
-            Orientation::R3 => (Input::CCW, 1),
-        };
-        Self(inp, 0, cnt)
-    }
-
-    /// Iterator of inputs to move horizontally from `col0` to `col1`.
-    fn horizontal(col0: u16, col1: u16) -> Self {
-        let dif = (col1 as i32) - (col0 as i32);
-        let inp = if dif < 0 { Input::Left } else { Input::Right };
-        Self(inp, 0, dif.abs() as usize)
-    }
-
-    /// Returns the total number of `Input`s produced by this iterator.
-    pub fn len(&self) -> usize {
-        self.2
+impl Inputs {
+    fn new(hold: bool, ori: Orientation, col0: u16, col1: u16) -> Self {
+        let taps = (col1 as i16) - (col0 as i16);
+        Self { hold, ori, taps }
     }
 }
 
-impl Iterator for RepeatedInputs {
+impl Iterator for Inputs {
     type Item = Input;
-
     fn next(&mut self) -> Option<Input> {
-        if self.1 >= self.2 {
-            None
-        } else {
-            self.1 += 1;
-            Some(self.0)
+        if self.hold {
+            self.hold = false;
+            return Some(Input::Hold);
+        }
+
+        match self.ori {
+            Orientation::R0 => {
+                if self.taps > 0 {
+                    self.taps -= 1;
+                    Some(Input::Right)
+                } else if self.taps < 0 {
+                    self.taps += 1;
+                    Some(Input::Left)
+                } else {
+                    None
+                }
+            }
+            Orientation::R1 => {
+                self.ori = Orientation::R0;
+                Some(Input::CW)
+            }
+            Orientation::R2 => {
+                self.ori = Orientation::R1;
+                Some(Input::CW)
+            }
+            Orientation::R3 => {
+                // for czsmall mode, switch to R2
+                self.ori = Orientation::R0;
+                Some(Input::CCW)
+            }
         }
     }
+}
 
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, Some((self.2).saturating_sub(self.1)))
+impl ExactSizeIterator for Inputs {
+    fn len(&self) -> usize {
+        let h_count = if self.hold { 1 } else { 0 };
+        let r_count = match self.ori {
+            Orientation::R0 => 0,
+            Orientation::R1 => 1,
+            Orientation::R2 => 2,
+            Orientation::R3 => 1,
+        };
+        let t_count = self.taps.abs() as usize;
+        h_count + r_count + t_count
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{shape::srs, Color};
+    use crate::{
+        shape::{srs, NormalShapeId},
+        Color,
+    };
 
     #[test]
-    fn test_rotate() {
-        use self::Input::*;
-        use self::Orientation::*;
-        assert_eq!(RepeatedInputs::rotate(R0).collect::<Vec<_>>(), vec![]);
-        assert_eq!(RepeatedInputs::rotate(R1).collect::<Vec<_>>(), vec![CW]);
-        assert_eq!(RepeatedInputs::rotate(R2).collect::<Vec<_>>(), vec![CW, CW]);
-        assert_eq!(RepeatedInputs::rotate(R3).collect::<Vec<_>>(), vec![CCW]);
+    fn test_inputs() {
+        use Input::*;
+        let inps1 = Inputs::new(false, Orientation::R1, 3, 5);
+        let inps2 = Inputs::new(false, Orientation::R2, 4, 2);
+        let inps3 = Inputs::new(false, Orientation::R3, 8, 8);
+        let inps4 = Inputs::new(true, Orientation::R0, 8, 9);
+        assert_eq!(inps1.len(), 3);
+        assert_eq!(inps1.collect::<Vec<_>>(), [CW, Right, Right]);
+        assert_eq!(inps2.len(), 4);
+        assert_eq!(inps2.collect::<Vec<_>>(), [CW, CW, Left, Left]);
+        assert_eq!(inps3.len(), 1);
+        assert_eq!(inps3.collect::<Vec<_>>(), [CCW]);
+        assert_eq!(inps4.len(), 2);
+        assert_eq!(inps4.collect::<Vec<_>>(), [Hold, Right]);
     }
 
-    #[test]
-    fn test_horizontal() {
-        use self::Input::*;
-        assert_eq!(RepeatedInputs::horizontal(2, 2).collect::<Vec<_>>(), vec![]);
-        assert_eq!(
-            RepeatedInputs::horizontal(0, 2).collect::<Vec<_>>(),
-            vec![Right, Right]
-        );
-        assert_eq!(
-            RepeatedInputs::horizontal(5, 2).collect::<Vec<_>>(),
-            vec![Left, Left, Left]
-        );
-    }
-
-    fn all_finesse(srs: &ShapeTable, id: NormalShapeId) -> Vec<Vec<Input>> {
-        let norm = &srs[id];
-        let num_cols = 10 - norm.cols() + 1;
+    fn all_finesse(srs: &ShapeTable, norm_id: NormalShapeId) -> Vec<Vec<Input>> {
+        let num_cols = 10 - srs[norm_id].cols() + 1;
         (0..num_cols)
-            .map(|col| inputs(srs, id, col).collect())
+            .map(|col| {
+                let place = Place {
+                    norm_id,
+                    did_hold: false,
+                    row: 0,
+                    col,
+                };
+                inputs(srs, &place).collect()
+            })
             .collect()
     }
 
@@ -178,5 +188,19 @@ mod test {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn test_did_hold_inputs() {
+        use Input::*;
+        let srs = srs();
+        let z1 = srs.iter_norms_by_color(Color('Z')).nth(1).unwrap();
+        let place = Place {
+            norm_id: z1,
+            row: 0,
+            col: 2,
+            did_hold: true,
+        };
+        assert_eq!(inputs(&srs, &place).collect::<Vec<_>>(), [Hold, CCW, Left]);
     }
 }

@@ -1,59 +1,65 @@
 use crate::{
-    shape::{NormalShapeId, ShapeTable},
-    BasicMatrix, Snapshot,
+    ai::State,
+    shape::{NormalShape, NormalShapeId, ShapeTable},
+    BasicMatrix, Color,
 };
 
-//////////////////////////////////////////////////////////////////////////////////////////
 // Data type for a single placement
 
 /// Represents a placement of a particular shape.
 #[derive(Clone)]
 pub struct Place {
     pub norm_id: NormalShapeId,
+    pub did_hold: bool,
     pub row: u16,
     pub col: u16,
 }
 
-impl Place {
-    /// Returns the placement by sonic dropping the shape specified by `norm_id` onto `matrix`
-    /// at column `col`.
-    fn sonic_drop(
-        srs: &ShapeTable,
-        matrix: &BasicMatrix,
-        norm_id: NormalShapeId,
-        col: u16,
-    ) -> Self {
-        let norm = &srs[norm_id];
-        let row = (0..norm.cols())
-            .map(|j| matrix.col_height(col + j).saturating_sub(norm.bottom(j)))
-            .max()
-            .expect("bug: no columns");
-        Place { norm_id, row, col }
-    }
-}
-
-impl std::fmt::Debug for Place {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let Place { norm_id, row, col } = self;
-        write!(f, "{:?}, column {}, row {}", norm_id, col, row)
-    }
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////
 // Computing all placements
 
 /// Returns all valid placements given the snapshot `snap`.
-pub fn placements<'a>(srs: &'a ShapeTable, snap: &'a Snapshot) -> impl Iterator<Item = Place> + 'a {
-    let current = snap.queue.get(0);
-    let matrix = &snap.matrix;
-    current
-        .into_iter()
-        .flat_map(move |&color| srs.iter_norms_by_color(color))
-        .flat_map(move |norm_id| {
-            let shape_width = &srs[norm_id].cols();
-            let cols = matrix.cols() + 1 - shape_width;
-            (0..cols).map(move |col| Place::sonic_drop(srs, matrix, norm_id, col))
+pub fn placements<'a>(stbl: &'a ShapeTable, state: &'a State) -> impl Iterator<Item = Place> + 'a {
+    let matrix = state.matrix();
+    avail_colors(state).flat_map(move |(color, did_hold)| {
+        stbl.iter_norms_by_color(color).flat_map(move |norm_id| {
+            avail_coords(matrix, &stbl[norm_id]).map(move |(row, col)| Place {
+                norm_id,
+                row,
+                col,
+                did_hold,
+            })
         })
+    })
+}
+
+fn avail_colors(state: &State) -> impl Iterator<Item = (Color, bool)> {
+    let (col_nh, mut col_h) = state.next();
+    if col_nh == col_h {
+        // don't use hold if identical to current piece
+        col_h = None;
+    }
+    let nh = col_nh.into_iter().map(|c| (c, false));
+    let h = col_h.into_iter().map(|c| (c, true));
+    nh.chain(h)
+}
+
+fn avail_coords<'a>(
+    matrix: &'a BasicMatrix,
+    norm: &'a NormalShape,
+) -> impl Iterator<Item = (u16, u16)> + 'a {
+    let cols = matrix.cols() + 1 - norm.cols();
+    (0..cols).map(move |col| {
+        let row = sonic_drop(matrix, norm, col);
+        (row, col)
+    })
+}
+
+/// Returns the row from sonic-dropping the shape `norm` from column `col` onto `matrix`.
+fn sonic_drop(matrix: &BasicMatrix, norm: &NormalShape, col: u16) -> u16 {
+    (0..norm.cols())
+        .map(|j| matrix.col_height(col + j).saturating_sub(norm.bottom(j)))
+        .max()
+        .expect("bug: no columns")
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -61,7 +67,28 @@ pub fn placements<'a>(srs: &'a ShapeTable, snap: &'a Snapshot) -> impl Iterator<
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{basic_matrix, shape::srs, Color};
+    use crate::{basic_matrix, shape::srs, Color, Snapshot};
+
+    fn colors(hold: char, queue: &str) -> Vec<(char, bool)> {
+        let snapshot = Snapshot {
+            hold: std::convert::TryFrom::try_from(hold).ok(),
+            queue: queue.chars().map(Color).collect(),
+            matrix: BasicMatrix::with_cols(1),
+        };
+        avail_colors(&snapshot.into())
+            .map(|(c, h)| (c.0, h))
+            .collect()
+    }
+
+    #[test]
+    fn test_avail_colors() {
+        assert_eq!(colors('.', "TJZ"), [('T', false), ('J', true)]);
+        assert_eq!(colors('I', "TJZ"), [('T', false), ('I', true)]);
+        assert_eq!(colors('I', "IJZ"), [('I', false)]);
+        assert_eq!(colors('.', "T"), [('T', false)]);
+        assert_eq!(colors('O', ""), [('O', true)]);
+        assert_eq!(colors('.', ""), []);
+    }
 
     #[test]
     fn test_sonic_drop() {
@@ -73,7 +100,7 @@ mod test {
         ];
         let srs = srs();
 
-        let sonic_drop = |norm_id, col| Place::sonic_drop(&srs, &mat, norm_id, col).row;
+        let sonic_drop = |norm_id, col| sonic_drop(&mat, &srs[norm_id], col);
 
         let i0 = srs.iter_norms_by_color(Color('I')).nth(0).unwrap();
         let i1 = srs.iter_norms_by_color(Color('I')).nth(1).unwrap();

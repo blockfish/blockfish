@@ -26,7 +26,6 @@ pub use score::ScoreParams;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    pub max_depth: usize,
     pub search_limit: usize,
     pub scoring: ScoreParams,
 }
@@ -34,7 +33,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            max_depth: 6,
             search_limit: 10_000,
             scoring: ScoreParams::default(),
         }
@@ -60,7 +58,6 @@ pub type SuggestionsIter = mpsc::Receiver<Suggestion>;
 
 pub fn ai(cfg: Config, snapshot: Snapshot) -> SuggestionsIter {
     let Config {
-        max_depth,
         search_limit,
         scoring,
     } = cfg;
@@ -68,54 +65,54 @@ pub fn ai(cfg: Config, snapshot: Snapshot) -> SuggestionsIter {
     let srs = srs();
     let (tx, rx) = mpsc::sync_channel(100);
     std::thread::spawn(move || {
-        let initial_placements: Vec<_> = placements(&srs, &snapshot).collect();
-        let mut roots: Vec<_> = initial_placements
-            .iter()
-            .map(|place| Root::new(&srs, place))
-            .collect();
-        let initial_nodes = initial_placements
-            .into_iter()
-            .enumerate()
-            .map(|(root_idx, place)| {
-                let mut root_node = Node::new(root_idx, snapshot.clone());
-                root_node.place(&srs, &scoring, place);
-                root_node
-            });
+        let initial_state: State = snapshot.into();
+        let placements: Vec<_> = placements(&srs, &initial_state).collect();
+        let nodes = placements.iter().enumerate().map(|(root_idx, place)| {
+            let mut root_node = Node::new(root_idx, initial_state.clone());
+            root_node.place(&srs, &scoring, place);
+            root_node
+        });
 
         let mut count = 0;
-        let mut search = a_star(&srs, &scoring, initial_nodes);
+        let mut search = a_star(&srs, &scoring, nodes);
         let mut best_score = std::i64::MAX;
+        let mut placement_scores: Vec<_> = placements.iter().map(|_| std::i64::MAX).collect();
+
         while let Some(node) = search.next() {
             count += 1;
 
-            if node.depth < max_depth {
+            if !node.state.is_max_depth() {
                 continue;
             }
 
             if node.score < best_score {
                 best_score = node.score;
                 log::trace!(
-                    "best: score {:>3}, root {:>2}, iteration {}",
+                    "best: score {:>3}, root {:>2}, depth {}, iteration #{}",
                     best_score,
                     node.root_idx,
+                    node.depth,
                     count
                 );
             }
 
-            let root = &mut roots[node.root_idx];
-            root.best_score = std::cmp::min(node.score, root.best_score);
+            let best = &mut placement_scores[node.root_idx];
+            *best = std::cmp::min(node.score, *best);
 
             if search.node_count() >= search_limit {
                 break;
             }
         }
-        log::info!("searched {} nodes to depth {}", count, max_depth);
 
-        for root in roots.into_iter().filter(|r| r.best_score < std::i64::MAX) {
-            let sugg = root.into_suggestion();
-            if tx.send(sugg).is_err() {
-                log::warn!("ai channel dropped; stopping early");
-                return;
+        log::info!("searched {} nodes", count);
+
+        for (place, score) in placements.iter().zip(placement_scores) {
+            if score < std::i64::MAX {
+                let inputs = inputs(&srs, &place).collect();
+                if tx.send(Suggestion { inputs, score }).is_err() {
+                    log::warn!("ai channel dropped; stopping early");
+                    return;
+                }
             }
         }
     });
@@ -123,25 +120,83 @@ pub fn ai(cfg: Config, snapshot: Snapshot) -> SuggestionsIter {
     rx
 }
 
-// Roots of the search tree (for comparing best placement)
+// Board state
 
-struct Root {
-    inputs: Vec<Input>,
-    best_score: i64,
+#[derive(Clone)]
+pub struct State {
+    matrix: BasicMatrix,
+    queue_rev: Vec<Color>,
+    has_held: bool,
 }
 
-impl Root {
-    fn new(stb: &ShapeTable, place: &Place) -> Self {
-        Self {
-            inputs: inputs(stb, place.norm_id, place.col).collect(),
-            best_score: std::i64::MAX,
+impl State {
+    fn matrix(&self) -> &BasicMatrix {
+        &self.matrix
+    }
+
+    /// Returns `true` if this state is at the max depth, so no further placements are
+    /// possible.
+    fn is_max_depth(&self) -> bool {
+        self.queue_rev.is_empty()
+    }
+
+    /// Returns `(next_piece, hold_piece)`, where either may be `None` if not available.
+    ///
+    /// Note: `hold_piece` is not exactly the current piece in hold, rather the piece you
+    /// will get if you press hold, i.e. if hold is currently empty then it refers to the
+    /// 2nd piece in the queue.
+    fn next(&self) -> (Option<Color>, Option<Color>) {
+        let from_top = |i| {
+            self.queue_rev
+                .len()
+                .checked_sub(i)
+                .and_then(|i| self.queue_rev.get(i))
+                .cloned()
+        };
+        let c1 = from_top(1);
+        let c2 = from_top(2);
+        if self.has_held {
+            (c2, c1)
+        } else {
+            (c1, c2)
         }
     }
 
-    fn into_suggestion(self) -> Suggestion {
-        Suggestion {
-            inputs: self.inputs,
-            score: self.best_score,
+    /// Applies the given placement to this state, modifying the queue and matrix.
+    fn place(&mut self, stbl: &ShapeTable, p: &Place) {
+        stbl[p.norm_id].blit_to(&mut self.matrix, p.row, p.col);
+        self.matrix.sift_rows();
+        self.pop(p.did_hold);
+    }
+
+    /// Removes a piece from the next queue, or hold slot if `hold` is `true`.
+    fn pop(&mut self, hold: bool) {
+        //  | has_held | hold  | pos
+        // -+----------+----------+----
+        //  | true     | false | 2
+        //  | true     | true  | 1
+        //  | false    | false | 1
+        //  | false    | true  | 2
+        let pos = if self.has_held == hold { 1 } else { 2 };
+        self.queue_rev.remove(self.queue_rev.len() - pos);
+        self.has_held |= hold;
+    }
+}
+
+impl From<Snapshot> for State {
+    fn from(snapshot: Snapshot) -> Self {
+        let matrix = snapshot.matrix;
+        let mut queue_rev = snapshot.queue;
+        queue_rev.reverse();
+        let mut has_held = false;
+        if let Some(hold_color) = snapshot.hold {
+            has_held = true;
+            queue_rev.push(hold_color);
+        }
+        Self {
+            matrix,
+            queue_rev,
+            has_held,
         }
     }
 }
@@ -149,52 +204,46 @@ impl Root {
 // Search nodes
 
 #[derive(Clone)]
-struct Node {
+pub struct Node {
     root_idx: usize,
-    snapshot: Snapshot,
+    state: State,
     depth: usize,
     score: i64,
     penalty: i64,
 }
 
 impl Node {
-    /// Constructs a new root node from `snapshot` with root index `root_idx`.
+    /// Constructs a new root node from state `state`. The root index `root_idx` indicates
+    /// which initial placement this node arose from.
     ///
     /// Note: the score is not calculated initially, since this node will most likely be
     /// immediately used to derive new nodes; the initial score would be discarded
     /// anyways.
-    fn new(root_idx: usize, snapshot: Snapshot) -> Self {
+    fn new(root_idx: usize, state: State) -> Self {
         Self {
             root_idx,
-            snapshot,
+            state,
             depth: 0,
             score: std::i64::MAX,
             penalty: 0,
         }
     }
 
-    fn place(&mut self, stb: &ShapeTable, sp: &ScoreParams, place: Place) {
-        // remove first from queue
-        assert_eq!(self.snapshot.queue.get(0), Some(&place.norm_id.color()));
-        self.snapshot.queue.remove(0);
-        // place shape onto matrix
-        let norm = &stb[place.norm_id];
-        norm.blit_to(&mut self.snapshot.matrix, place.row, place.col);
-        self.snapshot.matrix.sift_rows();
-        // update score
+    fn place(&mut self, stbl: &ShapeTable, sp: &ScoreParams, place: &Place) {
+        self.state.place(&stbl, &place);
         self.depth += 1;
-        self.score = score(sp, &self.snapshot);
+        self.score = score(sp, &self.state.matrix);
         self.penalty = penalty(sp, self.depth);
     }
 
-    fn neighbors<'a>(
+    fn successors<'a>(
         &'a self,
         stb: &'a ShapeTable,
         sp: &'a ScoreParams,
     ) -> impl Iterator<Item = Node> + 'a {
-        placements(&stb, &self.snapshot).map(move |place| {
+        placements(&stb, &self.state).map(move |place| {
             let mut node = self.clone();
-            node.place(stb, sp, place);
+            node.place(stb, sp, &place);
             node
         })
     }
@@ -208,6 +257,85 @@ mod test {
     use super::dfs::dfs;
     use super::*;
     use crate::basic_matrix;
+
+    fn place(stbl: &ShapeTable, color: Color, rot: usize, row: u16, col: u16) -> Place {
+        let norm_id = stbl.iter_norms_by_color(color).nth(rot).unwrap();
+        let did_hold = false;
+        Place {
+            norm_id,
+            did_hold,
+            row,
+            col,
+        }
+    }
+
+    #[test]
+    fn test_state_operations() {
+        let queue = || "LTJI".chars().map(Color);
+
+        let mut s: State = Snapshot {
+            hold: None,
+            queue: queue().collect(),
+            matrix: BasicMatrix::with_cols(10),
+        }
+        .into();
+        assert!(!s.is_max_depth());
+        assert_eq!(s.matrix.rows(), 0);
+        assert_eq!(s.matrix.cols(), 10);
+        assert_eq!(s.next(), (Some(Color('L')), Some(Color('T'))));
+
+        let srs = srs();
+        for (i, color) in queue().enumerate() {
+            s.place(&srs, &place(&srs, color, 0, (i * 2) as u16, 0));
+        }
+        assert!(s.is_max_depth());
+        assert_eq!(s.matrix.rows(), 7);
+        assert_eq!(s.next(), (None, None));
+    }
+
+    #[test]
+    fn test_state_use_hold() {
+        // something already in hold
+        let mut s: State = Snapshot {
+            hold: Some(Color('S')),
+            queue: "LTJI".chars().map(Color).collect(),
+            matrix: BasicMatrix::with_cols(10),
+        }
+        .into();
+        assert_eq!(s.next(), (Some(Color('L')), Some(Color('S'))));
+        s.pop(true);
+        assert_eq!(s.next(), (Some(Color('T')), Some(Color('L'))));
+        s.pop(false);
+        assert_eq!(s.next(), (Some(Color('J')), Some(Color('L'))));
+        // nothing previously in hold
+        s = Snapshot {
+            hold: None,
+            queue: "LTJI".chars().map(Color).collect(),
+            matrix: BasicMatrix::with_cols(10),
+        }
+        .into();
+        assert_eq!(s.next(), (Some(Color('L')), Some(Color('T'))));
+        s.pop(true);
+        assert_eq!(s.next(), (Some(Color('J')), Some(Color('L'))));
+    }
+
+    #[test]
+    fn test_state_nearly_empty_queue() {
+        let mut s: State = Snapshot {
+            hold: None,
+            queue: vec![Color('I')],
+            matrix: BasicMatrix::with_cols(10),
+        }
+        .into();
+        assert_eq!(s.next(), (Some(Color('I')), None));
+        s = Snapshot {
+            hold: Some(Color('O')),
+            queue: vec![],
+            matrix: BasicMatrix::with_cols(10),
+        }
+        .into();
+        assert_eq!(s.next(), (None, Some(Color('O'))));
+    }
 
     #[test]
     fn test_node_place() {
@@ -224,36 +352,28 @@ mod test {
                 hold: None,
                 queue: vec![Color('L'), Color('O')],
                 matrix,
-            },
+            }
+            .into(),
         );
         assert_eq!(node.depth, 0);
 
         // x . . . L
         // x x L L L  ==>  x . . . L
-        let l0 = srs.iter_norms_by_color(Color('L')).nth(0).unwrap();
-        node.place(
-            &srs,
-            &sp,
-            Place {
-                norm_id: l0,
-                row: 0,
-                col: 2,
-            },
-        );
+        node.place(&srs, &sp, &place(&srs, Color('L'), 0, 0, 2));
         assert_eq!(node.depth, 1);
-        assert_eq!(node.snapshot.queue, [Color('O')]);
-        assert_eq!(node.snapshot.matrix, basic_matrix![[xx, __, __, __, xx]]);
+        assert_eq!(node.state.next().0, Some(Color('O')));
+        assert_eq!(node.state.matrix(), &basic_matrix![[xx, __, __, __, xx]]);
 
         // O O . . .                              . . . O O
         // O O . . .    . O O . .    . . O O .    . . . O O
         // x . . . L    x O O . L    x . O O L    x . . . L
         //    (1)          (2)          (3)          (4)
         assert_eq!(
-            node.neighbors(&srs, &sp)
+            node.successors(&srs, &sp)
                 .map(|node| {
                     assert_eq!(node.depth, 2);
-                    assert_eq!(node.snapshot.queue, []);
-                    node.snapshot.matrix
+                    assert!(node.state.is_max_depth());
+                    node.state.matrix().clone()
                 })
                 .collect::<Vec<_>>(),
             [
@@ -273,8 +393,8 @@ mod test {
         );
 
         // queue empty
-        let node = node.neighbors(&srs, &sp).nth(0).unwrap();
-        assert_eq!(node.neighbors(&srs, &sp).count(), 0);
+        let node = node.successors(&srs, &sp).nth(0).unwrap();
+        assert_eq!(node.successors(&srs, &sp).count(), 0);
     }
 
     struct Stats(Vec<i64>);
@@ -307,10 +427,20 @@ mod test {
     fn test_dfs() {
         let srs = srs();
         let sp = ScoreParams::default();
-        let root = Node::new(0, snapshot_ex_4l_cheese());
-        let dfs_nodes = dfs(&srs, &sp, 2, std::iter::once(root.clone())).collect::<Vec<_>>();
-        assert_eq!(dfs_nodes.len(), 1 + 1 * 34 + 1 * 34 * 34);
-        assert!(dfs_nodes.iter().all(|n| n.depth <= 2));
+        let root = Node::new(0, snapshot_ex_4l_cheese().into());
+        let dfs_nodes = dfs(&srs, &sp, 3, std::iter::once(root.clone())).collect::<Vec<_>>();
+        assert_eq!(
+            dfs_nodes.len(),
+            //  | sequence        | placements
+            // -+-----------------+--------------
+            //  | .               | 1
+            //  | L,      T       | 34
+            //  | LT, LJ, TJ, TL  | 34^2
+            //  | LTJ,LJT,TJL,TLJ | 34^3
+            //  | LTI,LJI,TJI,TLI | 34^2 * 17
+            1 + (2 * 34) + (4 * 34 * 34) + (4 * 34 * 34 * 34) + (4 * 34 * 34 * 17)
+        );
+        assert!(dfs_nodes.iter().all(|n| n.depth <= 3));
     }
 
     #[cfg(feature = "slow-tests")]
@@ -318,7 +448,7 @@ mod test {
     fn test_a_star() {
         let srs = srs();
         let sp = ScoreParams::default();
-        let root = Node::new(0, snapshot_ex_4l_cheese());
+        let root = Node::new(0, snapshot_ex_4l_cheese().into());
 
         static MAX_DEPTH: usize = 4;
         let mut best_score = std::i64::MAX;
@@ -330,10 +460,11 @@ mod test {
         });
 
         let mut ast_traversed = 0u64;
-        a_star(&srs, &sp, std::iter::once(root))
+        let mut ast = a_star(&srs, &sp, std::iter::once(root));
+        (&mut ast)
             .take_while(|n| n.depth < MAX_DEPTH || n.score > best_score)
             .for_each(|n| {
-                println!("--| {:<3} {:?}", n.score, n.snapshot.matrix);
+                println!("--| {:<3} {:?}", n.score, n.state.matrix);
                 ast_traversed += 1;
             });
 
@@ -341,8 +472,9 @@ mod test {
         println!("best score @ depth {}: {}", MAX_DEPTH, best_score);
         println!("dfs nodes traversed: {}", dfs_traversed);
         println!("a* nodes traversed: {}", ast_traversed);
+        println!("a* heap size: {}", ast.node_count());
 
-        assert!((ast_traversed * 1000) < dfs_traversed);
+        assert!((ast_traversed * 5000) < dfs_traversed);
     }
 
     // #[test]
@@ -353,12 +485,12 @@ mod test {
         let sp = ScoreParams::default();
 
         let deeper = |nodes: &[Node]| -> Vec<Node> {
-            nodes.iter().flat_map(|n| n.neighbors(&srs, &sp)).collect()
+            nodes.iter().flat_map(|n| n.successors(&srs, &sp)).collect()
         };
         let s_hist = |nodes: &[Node]| nodes.iter().map(|n| n.score).collect::<Histogram>();
         let stats = |nodes: &[Node]| Stats(nodes.iter().map(|n| n.score).collect());
 
-        let root = Node::new(0, snapshot_ex_4l_cheese());
+        let root = Node::new(0, snapshot_ex_4l_cheese().into());
         let depth1_nodes = deeper(&[root]);
         let depth2_nodes = deeper(&depth1_nodes);
         let depth3_nodes = deeper(&depth2_nodes);

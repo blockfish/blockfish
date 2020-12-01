@@ -1,6 +1,6 @@
 use block_stacker::{Ruleset, Stacker};
 use blockfish::{Config, StackerExt as _};
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
 struct Race {
     ai_config: Config,
