@@ -10,23 +10,24 @@ I will distribute working builds at some point...
 
 ## Compiling
 
-This command builds the GUI client and the CLI REPL (read-eval-print-loop).
-
-```
-cargo build --release --all-features
-```
-
-The REPL is intended to use to allow integration with other clients, but the protocoly is
-currently WIP. For now you can observe the engine by using the standalone client.
+This command compiles and runs the GUI client:
 
 ```
 cargo run --release --bin blockfish-client
+```
+
+This command compiles and runs the command line 'cheese race' benchmarker:
+
+```
+cargo run --release --bin blockfish-race
 ```
 
 Mainly tested on Linux, but this should build fine on Windows as long as you have the
 `.LIB` files for SDL2 and SDL2_ttf handy.
 
 ## Controls
+
+Controls are currently hard-coded in `blockfish-client/src/main.rs`:
 
 - `<left>` - move left
 - `<right>` - move right

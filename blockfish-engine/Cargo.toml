@@ -5,11 +5,6 @@ authors = ["iitalics <iitalics@gmail.com>"]
 edition = "2018"
 
 [[bin]]
-name = "blockfish-repl"
-path = "src/bin/repl.rs"
-required-features = ["repl"]
-
-[[bin]]
 name = "blockfish-race"
 path = "src/bin/race.rs"
 required-features = ["block-stacker"]
@@ -17,12 +12,10 @@ required-features = ["block-stacker"]
 [features]
 default = []
 slow-tests = []
-repl = ["env_logger"]
 
 [dependencies]
 thiserror = "1.0"
 log = "0.4.8"
-env_logger = { version = "0.8", optional = true }
 rand = "0.7"
 red_union_find = "0.2.5"
 
