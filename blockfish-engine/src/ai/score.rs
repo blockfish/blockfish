@@ -57,7 +57,7 @@ fn negative_spaces(matrix: &BasicMatrix) -> impl Iterator<Item = u16> {
     }
 
     let mut uf = UF::new_reflexive(gaps.len());
-    for (idxs, prev_idxs) in row_idxs.iter().zip(row_idxs[1..].iter()) {
+    for (idxs, prev_idxs) in row_idxs.iter().zip(row_idxs.iter().skip(1)) {
         for idx1 in idxs.clone() {
             for idx2 in prev_idxs.clone() {
                 if range_intersects(&gaps[idx1], &gaps[idx2]) {
@@ -201,5 +201,10 @@ mod test {
             [1, 9],
             "overlap (depth=3, ivnerted)"
         );
+    }
+
+    #[test]
+    fn test_negative_spaces_all_clear() {
+        assert_eq!(neg_space(BasicMatrix::with_cols(5)), []);
     }
 }

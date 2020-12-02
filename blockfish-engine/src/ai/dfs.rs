@@ -1,15 +1,14 @@
-use super::{Node, ScoreParams};
-use crate::shape::ShapeTable;
+use super::{place::PlacementSearch, Node, ScoreParams};
 
 pub(super) struct DFS<'s> {
     nodes: Vec<Node>,
     max_depth: usize,
-    stbl: &'s ShapeTable,
+    place_search: PlacementSearch<'s>,
     scoring: &'s ScoreParams,
 }
 
 pub(super) fn dfs<'s, I>(
-    stbl: &'s ShapeTable,
+    place_search: PlacementSearch<'s>,
     scoring: &'s ScoreParams,
     max_depth: usize,
     iter: I,
@@ -22,7 +21,7 @@ where
     DFS {
         nodes,
         max_depth,
-        stbl,
+        place_search,
         scoring,
     }
 }
@@ -33,7 +32,9 @@ impl<'s> Iterator for DFS<'s> {
     fn next(&mut self) -> Option<Node> {
         let node = self.nodes.pop()?;
         if node.depth < self.max_depth {
-            self.nodes.extend(node.successors(self.stbl, self.scoring));
+            self.place_search.compute(&node.state);
+            let succ = node.successors(&self.place_search, self.scoring);
+            self.nodes.extend(succ);
         }
         Some(node)
     }

@@ -104,15 +104,7 @@ mod test {
     fn all_finesse(srs: &ShapeTable, norm_id: NormalShapeId) -> Vec<Vec<Input>> {
         let num_cols = 10 - srs[norm_id].cols() + 1;
         (0..num_cols)
-            .map(|col| {
-                let place = Place {
-                    norm_id,
-                    did_hold: false,
-                    row: 0,
-                    col,
-                };
-                inputs(srs, &place).collect()
-            })
+            .map(|col| inputs(srs, &Place::new(norm_id, (0, col))).collect())
             .collect()
     }
 
@@ -195,12 +187,8 @@ mod test {
         use Input::*;
         let srs = srs();
         let z1 = srs.iter_norms_by_color(Color('Z')).nth(1).unwrap();
-        let place = Place {
-            norm_id: z1,
-            row: 0,
-            col: 2,
-            did_hold: true,
-        };
+        let mut place = Place::new(z1, (0, 2));
+        place.did_hold = true;
         assert_eq!(inputs(&srs, &place).collect::<Vec<_>>(), [Hold, CCW, Left]);
     }
 }

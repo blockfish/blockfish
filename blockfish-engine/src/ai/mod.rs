@@ -5,13 +5,10 @@ mod score;
 
 #[cfg(test)]
 mod dfs;
-#[cfg(test)]
-mod histogram;
 
 use self::{
     a_star::a_star,
-    finesse::inputs,
-    place::{placements, Place},
+    place::{Place, PlacementSearch},
     score::{penalty, score},
 };
 use crate::{
@@ -33,7 +30,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            search_limit: 10_000,
+            search_limit: 25_000,
             scoring: ScoreParams::default(),
         }
     }
@@ -66,17 +63,31 @@ pub fn ai(cfg: Config, snapshot: Snapshot) -> SuggestionsIter {
     let (tx, rx) = mpsc::sync_channel(100);
     std::thread::spawn(move || {
         let initial_state: State = snapshot.into();
-        let placements: Vec<_> = placements(&srs, &initial_state).collect();
-        let nodes = placements.iter().enumerate().map(|(root_idx, place)| {
-            let mut root_node = Node::new(root_idx, initial_state.clone());
-            root_node.place(&srs, &scoring, place);
-            root_node
-        });
+        let mut place_search = PlacementSearch::new(&srs);
+        place_search.compute(&initial_state);
+
+        let placement_inputs = place_search
+            .placements()
+            .map(|place| finesse::inputs(place_search.shape_table(), place).collect())
+            .collect::<Vec<Vec<_>>>();
+        let mut placement_scores = place_search
+            .placements()
+            .map(|_| std::i64::MAX)
+            .collect::<Vec<_>>();
+
+        let nodes = place_search
+            .placements()
+            .enumerate()
+            .map(|(root_idx, place)| {
+                let mut root_node = Node::new(root_idx, initial_state.clone());
+                root_node.place(&srs, &scoring, place);
+                root_node
+            })
+            .collect();
 
         let mut count = 0;
-        let mut search = a_star(&srs, &scoring, nodes);
+        let mut search = a_star(place_search, &scoring, nodes);
         let mut best_score = std::i64::MAX;
-        let mut placement_scores: Vec<_> = placements.iter().map(|_| std::i64::MAX).collect();
 
         while let Some(node) = search.next() {
             count += 1;
@@ -106,9 +117,8 @@ pub fn ai(cfg: Config, snapshot: Snapshot) -> SuggestionsIter {
 
         log::info!("searched {} nodes", count);
 
-        for (place, score) in placements.iter().zip(placement_scores) {
+        for (inputs, score) in placement_inputs.into_iter().zip(placement_scores) {
             if score < std::i64::MAX {
-                let inputs = inputs(&srs, &place).collect();
                 if tx.send(Suggestion { inputs, score }).is_err() {
                     log::warn!("ai channel dropped; stopping early");
                     return;
@@ -236,14 +246,17 @@ impl Node {
         self.penalty = penalty(sp, self.depth);
     }
 
+    /// Returns a list of the "successor" to this node, using placements computed by the
+    /// placement search `search`, and scores the successor using the parameters specified
+    /// in `scoring`.
     fn successors<'a>(
         &'a self,
-        stb: &'a ShapeTable,
-        sp: &'a ScoreParams,
+        search: &'a PlacementSearch,
+        scoring: &'a ScoreParams,
     ) -> impl Iterator<Item = Node> + 'a {
-        placements(&stb, &self.state).map(move |place| {
+        search.placements().map(move |place| {
             let mut node = self.clone();
-            node.place(stb, sp, &place);
+            node.place(search.shape_table(), scoring, &place);
             node
         })
     }
@@ -260,13 +273,7 @@ mod test {
 
     fn place(stbl: &ShapeTable, color: Color, rot: usize, row: u16, col: u16) -> Place {
         let norm_id = stbl.iter_norms_by_color(color).nth(rot).unwrap();
-        let did_hold = false;
-        Place {
-            norm_id,
-            did_hold,
-            row,
-            col,
-        }
+        Place::new(norm_id, (row, col))
     }
 
     #[test]
@@ -368,8 +375,10 @@ mod test {
         // O O . . .    . O O . .    . . O O .    . . . O O
         // x . . . L    x O O . L    x . O O L    x . . . L
         //    (1)          (2)          (3)          (4)
+        let mut ps = PlacementSearch::new(&srs);
+        ps.compute(&node.state);
         assert_eq!(
-            node.successors(&srs, &sp)
+            node.successors(&ps, &sp)
                 .map(|node| {
                     assert_eq!(node.depth, 2);
                     assert!(node.state.is_max_depth());
@@ -391,23 +400,9 @@ mod test {
                 ],
             ]
         );
-
-        // queue empty
-        let node = node.successors(&srs, &sp).nth(0).unwrap();
-        assert_eq!(node.successors(&srs, &sp).count(), 0);
     }
 
-    struct Stats(Vec<i64>);
-    impl std::fmt::Display for Stats {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            let xs = self.0.as_slice();
-            let len = xs.len() as f64;
-            let avg = (xs.iter().cloned().sum::<i64>() as f64) / len;
-            let sd = (xs.iter().map(|&x| (x as f64 - avg).powi(2)).sum::<f64>() / len).sqrt();
-            write!(f, "avg: {:.2}, sd: {:.2}", avg, sd)
-        }
-    }
-
+    #[cfg(feature = "slow-tests")]
     fn snapshot_ex_4l_cheese() -> Snapshot {
         let (xx, __) = (true, false);
         Snapshot {
@@ -428,7 +423,13 @@ mod test {
         let srs = srs();
         let sp = ScoreParams::default();
         let root = Node::new(0, snapshot_ex_4l_cheese().into());
-        let dfs_nodes = dfs(&srs, &sp, 3, std::iter::once(root.clone())).collect::<Vec<_>>();
+        let dfs_nodes = dfs(
+            PlacementSearch::new(&srs),
+            &sp,
+            3,
+            std::iter::once(root.clone()),
+        )
+        .collect::<Vec<_>>();
         assert_eq!(
             dfs_nodes.len(),
             //  | sequence        | placements
@@ -454,13 +455,19 @@ mod test {
         let mut best_score = std::i64::MAX;
 
         let mut dfs_traversed = 0u64;
-        dfs(&srs, &sp, MAX_DEPTH, std::iter::once(root.clone())).for_each(|n| {
+        dfs(
+            PlacementSearch::new(&srs),
+            &sp,
+            MAX_DEPTH,
+            std::iter::once(root.clone()),
+        )
+        .for_each(|n| {
             dfs_traversed += 1;
             best_score = std::cmp::min(best_score, n.score);
         });
 
         let mut ast_traversed = 0u64;
-        let mut ast = a_star(&srs, &sp, std::iter::once(root));
+        let mut ast = a_star(PlacementSearch::new(&srs), &sp, vec![root]);
         (&mut ast)
             .take_while(|n| n.depth < MAX_DEPTH || n.score > best_score)
             .for_each(|n| {
@@ -475,47 +482,5 @@ mod test {
         println!("a* heap size: {}", ast.node_count());
 
         assert!((ast_traversed * 5000) < dfs_traversed);
-    }
-
-    // #[test]
-    #[allow(dead_code)]
-    fn test_cheese_score_histogram() {
-        use super::histogram::Histogram;
-        let srs = srs();
-        let sp = ScoreParams::default();
-
-        let deeper = |nodes: &[Node]| -> Vec<Node> {
-            nodes.iter().flat_map(|n| n.successors(&srs, &sp)).collect()
-        };
-        let s_hist = |nodes: &[Node]| nodes.iter().map(|n| n.score).collect::<Histogram>();
-        let stats = |nodes: &[Node]| Stats(nodes.iter().map(|n| n.score).collect());
-
-        let root = Node::new(0, snapshot_ex_4l_cheese().into());
-        let depth1_nodes = deeper(&[root]);
-        let depth2_nodes = deeper(&depth1_nodes);
-        let depth3_nodes = deeper(&depth2_nodes);
-
-        assert_eq!(depth1_nodes.len(), 34);
-        assert_eq!(depth2_nodes.len(), 34 * 34);
-        assert_eq!(depth3_nodes.len(), 34 * 34 * 34);
-
-        print!(
-            "----------\nDEPTH 1\n{} NODES\nSCORE:\n{}{}\n\n",
-            depth1_nodes.len(),
-            s_hist(&depth1_nodes),
-            stats(&depth1_nodes),
-        );
-        print!(
-            "----------\nDEPTH 2\n{} NODES\n\nSCORE:\n{}{}\n",
-            depth2_nodes.len(),
-            s_hist(&depth2_nodes),
-            stats(&depth2_nodes),
-        );
-        print!(
-            "----------\nDEPTH 3\n{} NODES\n\nSCORE:\n{}{}\n",
-            depth3_nodes.len(),
-            s_hist(&depth3_nodes),
-            stats(&depth3_nodes),
-        );
     }
 }

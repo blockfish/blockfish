@@ -35,12 +35,12 @@ impl Race {
 }
 
 static REFRESH_PERIOD: Duration = Duration::from_millis(500);
-static GOAL_DS: usize = 5000;
+static GOAL_DS: usize = 1000;
 
 fn main() {
     // timing
     let start = Instant::now();
-    let mut prev_refresh = start - REFRESH_PERIOD;
+    let mut prev_refresh = start;
 
     // cheese race bot
     let mut race = Race::new(Config::default(), Ruleset::guideline());
@@ -57,10 +57,11 @@ fn main() {
         }
     }
 
+    let end = Instant::now();
     println!("\r----------------------------------------------------");
     println!("{} pieces", race.pc);
     println!("{} cleared", race.ds);
-    println!("total time: {:.2}s", (Instant::now() - start).as_secs_f64());
+    println!("total time: {:.2}s", (end - start).as_secs_f64());
 }
 
 fn print_stats(race: &Race, time: Option<Duration>) {
@@ -68,10 +69,10 @@ fn print_stats(race: &Race, time: Option<Duration>) {
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
 
-    write!(stdout, "{} pieces, {}/{}, ", race.pc, race.ds, GOAL_DS).unwrap();
+    write!(stdout, "{} pieces, {}/{}", race.pc, race.ds, GOAL_DS).unwrap();
     if let Some(time) = time {
         let pps = (race.pc as f64) / time.as_secs_f64();
-        write!(stdout, "{:.2} pps", pps).unwrap();
+        write!(stdout, ", {:.2} pps", pps).unwrap();
     }
 
     stdout.flush().unwrap();
