@@ -1,4 +1,4 @@
-use crate::{BasicMatrix, Color, Input, Snapshot};
+use crate::{BasicMatrix, Color, Input, Snapshot, AI};
 use std::convert::TryInto;
 
 pub trait StackerExt {
@@ -14,6 +14,11 @@ pub trait StackerExt {
         for inp in iter {
             self.input(inp);
         }
+    }
+
+    /// Returns the static evaluation of the game state according to the AI.
+    fn static_eval(&self, ai: &AI) -> Option<i64> {
+        self.snapshot().map(|s| ai.static_eval(&s))
     }
 }
 

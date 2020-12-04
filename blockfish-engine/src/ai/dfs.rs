@@ -31,8 +31,8 @@ impl<'s> Iterator for DFS<'s> {
 
     fn next(&mut self) -> Option<Node> {
         let node = self.nodes.pop()?;
-        if node.depth < self.max_depth {
-            self.place_search.compute(&node.state);
+        if node.depth() < self.max_depth {
+            self.place_search.compute(node.state());
             let succ = node.successors(&self.place_search, self.scoring);
             self.nodes.extend(succ);
         }

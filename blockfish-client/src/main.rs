@@ -2,6 +2,7 @@
 
 mod controller;
 mod resources;
+mod util;
 mod view;
 
 use sdl2::{event::Event, keyboard::Keycode};

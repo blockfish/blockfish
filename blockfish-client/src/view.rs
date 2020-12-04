@@ -26,6 +26,38 @@ pub struct View<'h> {
     hud: Vec<Label<'h>>,
 }
 
+/// Contains information to be displayed by the HUD labels.
+#[derive(Clone, Debug)]
+pub struct LabelInfo {
+    pub pace: PaceLabelInfo,
+    pub engine: EngineLabelInfo,
+}
+
+/// HUD label info related to the user's downstacking pace.
+#[derive(Clone, Debug)]
+pub struct PaceLabelInfo {
+    pub pieces: u32,
+    pub cleared: u32,
+    pub downstack: u32,
+    pub dpp: Option<f32>,
+    pub pace: Option<u32>,
+}
+
+/// HUD label info related to the engine status.
+#[derive(Clone, Debug)]
+pub enum EngineLabelInfo {
+    Thinking,
+    Suggesting {
+        index: usize,
+        total: usize,
+        score: i64,
+        base_eval: Option<i64>,
+        piece_eval: Option<i64>,
+    },
+    #[allow(dead_code)]
+    Failed,
+}
+
 type TextureCreator = sdl2::render::TextureCreator<sdl2::video::WindowContext>;
 
 impl<'h> View<'h> {
@@ -106,8 +138,6 @@ impl<'h> View<'h> {
     }
 
     /// Sets the suggested piece.
-    // TODO: lift this allow(unused) when we have engine suggestions
-    #[allow(unused)]
     pub fn set_suggested(&mut self, color: char, row: i16, col: i16, rot: i32) {
         let rules = &self.rules;
         let coords = rules.coords(color, rot).map(move |(i, j)| {
@@ -123,27 +153,70 @@ impl<'h> View<'h> {
         self.suggested.clear();
     }
 
-    /// Sets the HUD text.
-    pub fn set_hud_labels<I>(&mut self, labels: I)
-    where
-        I: IntoIterator,
-        I::Item: std::fmt::Display,
-    {
-        let mut len = 0;
-        for (i, item) in labels.into_iter().enumerate() {
-            if i >= self.hud.len() {
+    /// Sets the HUD label text based on the provided info.
+    pub fn set_hud_labels(&mut self, info: LabelInfo) {
+        use self::TextStyle::*;
+        use crate::util::text_fmt::*;
+
+        // label!(...) sets the next label text according to a format string.
+        let mut count = 0;
+        let mut set_next = |style: TextStyle, args: std::fmt::Arguments| {
+            if count >= self.hud.len() {
                 self.hud.push(Label::new());
             }
-            self.hud[i].set(item);
-            len += 1;
+            count += 1;
+            self.hud[count - 1].set(style, args);
+        };
+
+        macro_rules! label {
+            ($s:expr, $($fmt:tt)*) => {{
+                set_next($s, format_args!($($fmt)*))
+            }}
         }
-        self.hud.resize_with(len, || unreachable!());
-        for label in self.hud.iter_mut() {
-            let style = TextStyle {
-                font: &self.resources.hud_font,
-                color: self.theme.hud_text,
-            };
-            label.repaint(&self.texture_creator, style);
+
+        label!(Normal, "{}", plural(info.pace.pieces, "piece"));
+        label!(Normal, "{}", plural(info.pace.downstack, "garbage line"));
+        label!(Normal, "{}", plural(info.pace.cleared, "total line"));
+        label!(Normal, "{} dpp", maybe_f32(info.pace.dpp, "?"));
+        label!(Normal, "{} pace", maybe(info.pace.pace, "?"));
+        label!(Normal, "");
+
+        label!(Highlight, "* engine enabled *");
+        match info.engine {
+            EngineLabelInfo::Thinking => label!(Normal, "thinking ..."),
+            EngineLabelInfo::Failed => {
+                label!(Bad, "failed :(");
+            }
+            EngineLabelInfo::Suggesting {
+                index,
+                total,
+                score,
+                base_eval,
+                piece_eval,
+            } => {
+                label!(Normal, "suggestion {} of {}", index + 1, total);
+                if let Some(base_eval) = base_eval {
+                    label!(Normal, "base eval: {}", base_eval);
+                    let score_diff = score - base_eval;
+                    label!(goodbad(score_diff), "suggestion: {:+}", score_diff);
+                    if let Some(piece_score) = piece_eval {
+                        let piece_diff = piece_score - base_eval;
+                        label!(goodbad(piece_diff), "this piece: {:+}", piece_diff);
+                    }
+                }
+            }
+        }
+
+        for (i, label) in self.hud.iter_mut().enumerate() {
+            if i >= count {
+                label.clear();
+            } else {
+                label.repaint(
+                    &self.texture_creator,
+                    &self.theme.text,
+                    &self.resources.hud_font,
+                );
+            }
         }
     }
 
@@ -338,6 +411,29 @@ struct Label<'tx> {
     texture: Option<Texture<'tx>>,
     width: u32,
     height: u32,
+    style: TextStyle,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum TextStyle {
+    Normal,
+    Highlight,
+    Good,
+    Bad,
+}
+
+impl Default for TextStyle {
+    fn default() -> Self {
+        TextStyle::Normal
+    }
+}
+
+fn goodbad(x: i64) -> TextStyle {
+    if x < 0 {
+        TextStyle::Good
+    } else {
+        TextStyle::Bad
+    }
 }
 
 impl<'tx> Label<'tx> {
@@ -348,26 +444,41 @@ impl<'tx> Label<'tx> {
             texture: None,
             width: 0,
             height: 0,
+            style: TextStyle::Normal,
         }
     }
 
-    fn set(&mut self, text: impl std::fmt::Display) {
+    fn clear(&mut self) {
+        self.buf.clear();
+        self.texture = None;
+    }
+
+    fn set(&mut self, style: TextStyle, text: impl std::fmt::Display) {
         use std::fmt::Write;
+        self.style = style;
         self.tmp.clear();
         write!(&mut self.tmp, "{}", text).unwrap();
-
         if self.tmp != self.buf {
             self.buf.clone_from(&self.tmp);
             self.texture = None;
         }
     }
 
-    fn repaint(&mut self, tc: &'tx TextureCreator, style: TextStyle) {
+    fn repaint(
+        &mut self,
+        tc: &'tx TextureCreator,
+        theme: &TextTheme,
+        font: &sdl2::ttf::Font<'tx, 'static>,
+    ) {
         if self.texture.is_none() && self.buf.len() > 0 {
-            let surf = style
-                .font
+            let surf = font
                 .render(&self.buf)
-                .blended(style.color)
+                .blended(match self.style {
+                    TextStyle::Normal => theme.normal,
+                    TextStyle::Highlight => theme.highlight,
+                    TextStyle::Good => theme.good,
+                    TextStyle::Bad => theme.bad,
+                })
                 .expect("text render failed");
             let texture = tc
                 .create_texture_from_surface(&surf)
@@ -385,11 +496,6 @@ impl<'tx> Label<'tx> {
             dc.copy(tx, None, Some(dst.into())).expect("draw failed");
         }
     }
-}
-
-struct TextStyle<'r, 'ttf> {
-    font: &'r sdl2::ttf::Font<'ttf, 'static>,
-    color: Color,
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -497,9 +603,18 @@ impl Geometry {
 pub struct Theme {
     pub background: Color,
     pub matrix_border: Color,
-    pub hud_text: Color,
     pub cell_colors: HashMap<char, Color>,
     pub ghost_colors: HashMap<char, Color>,
+    pub text: TextTheme,
+}
+
+/// Holds configuration for just the text colors.
+#[derive(Clone, Debug)]
+pub struct TextTheme {
+    normal: Color,
+    highlight: Color,
+    good: Color,
+    bad: Color,
 }
 
 impl Default for Theme {
@@ -528,12 +643,19 @@ impl Default for Theme {
             *color = Color::RGBA(r, g, b, 128);
         }
 
+        let text = TextTheme {
+            normal: rgb24(0x888888),    // #888
+            highlight: rgb24(0xcccccc), // #ccc
+            good: rgb24(0x44aa44),      // #4a4
+            bad: rgb24(0xcc4444),       // #c44
+        };
+
         Self {
             background: rgb24(0x111111),    // #111
             matrix_border: rgb24(0x333333), // #333
-            hud_text: rgb24(0x888888),      // #888
             cell_colors,
             ghost_colors,
+            text,
         }
     }
 }

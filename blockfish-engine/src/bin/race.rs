@@ -22,11 +22,9 @@ impl Race {
 
     fn step(&mut self) {
         let snapshot = self.stacker.snapshot().expect("no snapshot");
-        let ai = blockfish::ai(self.ai_config.clone(), snapshot);
-        let best_suggestion = ai
-            .into_iter()
-            .min_by_key(|s| s.score)
-            .expect("no suggestions");
+        let mut ai = blockfish::AI::new(self.ai_config.clone());
+        ai.start(snapshot);
+        let best_suggestion = ai.iter().min_by_key(|s| s.score).expect("no suggestions");
         self.stacker.run(best_suggestion.inputs);
         let (_, ds) = self.stacker.hard_drop();
         self.ds += ds;

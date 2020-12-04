@@ -31,7 +31,7 @@ impl<'s> Iterator for AStar<'s> {
     type Item = Node;
     fn next(&mut self) -> Option<Node> {
         let node = self.nodes.pop()?.0;
-        self.place_search.compute(&node.state);
+        self.place_search.compute(node.state());
         let succ = node.successors(&self.place_search, self.scoring);
         self.nodes.extend(succ.map(AStarNode));
         Some(node)
@@ -42,9 +42,7 @@ struct AStarNode(Node);
 
 impl AStarNode {
     fn f_val(&self) -> i64 {
-        let g = self.0.penalty;
-        let h = self.0.score;
-        g + h
+        self.0.score() + self.0.penalty()
     }
 }
 

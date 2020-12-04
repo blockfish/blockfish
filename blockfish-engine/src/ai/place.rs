@@ -1,5 +1,5 @@
 use crate::{
-    ai::State,
+    ai::node::State,
     shape::{NormalShapeId, ShapeTable},
     BasicMatrix, Color,
 };
