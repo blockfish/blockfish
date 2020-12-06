@@ -28,6 +28,16 @@ macro_rules! basic_matrix {
     };
 }
 
+#[inline(always)]
+fn empty_row_bits(cols: u16) -> u16 {
+    std::u16::MAX << cols
+}
+
+#[inline(always)]
+fn full_row_bits(_cols: u16) -> u16 {
+    std::u16::MAX
+}
+
 impl BasicMatrix {
     /// Constructs an empty matrix with the given number of columns.
     pub fn with_cols(cols: u16) -> Self {
@@ -35,13 +45,22 @@ impl BasicMatrix {
     }
 
     /// Returns the number of columns.
+    #[inline(always)]
     pub fn cols(&self) -> u16 {
         self.cols
     }
 
     /// Returns the number of (occupied) rows.
+    #[inline(always)]
     pub fn rows(&self) -> u16 {
         self.data.len() as u16
+    }
+
+    /// Ensure that row `i` is present by appending empty rows to the top of the matrix.
+    fn ensure_row(&mut self, i: u16) {
+        let min_len = (i as usize) + 1;
+        let len = std::cmp::max(self.data.len(), min_len);
+        self.data.resize(len, empty_row_bits(self.cols));
     }
 
     /// Returns true if the coordinate `coord` is occupied. Out of bounds coordinates are
@@ -73,12 +92,6 @@ impl BasicMatrix {
         }
     }
 
-    fn ensure_row(&mut self, i: u16) {
-        let min_len = (i as usize) + 1;
-        let len = std::cmp::max(self.data.len(), min_len);
-        self.data.resize(len, 0u16);
-    }
-
     fn set_(&mut self, i: u16, j: u16) {
         self.ensure_row(i);
         self.data[i as usize] |= 1 << j;
@@ -97,50 +110,43 @@ impl BasicMatrix {
         if mat.rows() == 0 {
             return;
         }
+        let mask = (1 << mat.cols()) - 1;
         self.ensure_row(i0 + mat.rows() - 1);
-        let row_bits_mask = (1 << self.cols()) - 1;
         for i in 0..mat.rows() {
-            let src = mat.data[i as usize];
-            let dst = &mut self.data[(i0 + i) as usize];
-            *dst |= src << j0;
-            *dst &= row_bits_mask;
+            self.data[(i0 + i) as usize] |= (mat.data[i as usize] & mask) << j0;
         }
     }
 
-    /// Appends a new row to the top of the matrix.
-    ///
-    /// # Arguments
-    ///
-    /// * `cells` - list of cell data for the new row. `true` indicates a cell is present.
-    pub fn push_row(&mut self, cells: impl IntoIterator<Item = bool>) {
-        let mut row_bits = 0u16;
-        for (j, cell) in cells.into_iter().enumerate().take(self.cols as usize) {
-            if cell {
-                row_bits |= 1 << j;
-            }
-        }
-        self.data.push(row_bits);
+    /// Returns true if `mat` overlaps with this matrix, when offset by `(i0, j0)`.
+    pub fn overlaps(&self, mat: &BasicMatrix, (i0, j0): (u16, u16)) -> bool {
+        let mask = (1 << mat.cols()) - 1;
+        // i < n && (i0 + i) < self.rows()
+        // i < n && i < (self.rows() - i0)
+        // i < min(n, self.rows() - i0)
+        let n = std::cmp::min(self.rows().saturating_sub(i0), mat.rows());
+        (0..n).any(|i| {
+            let here = self.data[(i0 + i) as usize];
+            let there = (mat.data[i as usize] & mask) << j0;
+            (here & there) != 0
+        })
     }
 
     /// Removes all rows that are either entirely occupied or entirely empty. Returns the
     /// number of rows that were removed this way because they were full.
     pub fn sift_rows(&mut self) -> usize {
-        let empty_row_bits = 0u16;
-        let full_row_bits = (1 << self.cols()) - 1;
-
         let mut dst_idx = 0;
         let mut full_cnt = 0;
         for src_idx in 0..self.data.len() {
             let row_bits = self.data[src_idx];
-            if row_bits == full_row_bits {
+            if row_bits == full_row_bits(self.cols) {
                 full_cnt += 1;
-            } else if row_bits != empty_row_bits {
+            } else if row_bits != empty_row_bits(self.cols) {
                 self.data[dst_idx] = row_bits;
                 dst_idx += 1;
             }
         }
 
-        self.data.resize(dst_idx, 0);
+        self.data.resize_with(dst_idx, || unreachable!());
         full_cnt
     }
 
@@ -157,8 +163,6 @@ impl BasicMatrix {
     pub fn gaps(&self, i: u16) -> impl Iterator<Item = Range<u16>> {
         let cols = self.cols();
         let row_bits = self.data[i as usize];
-        // fill in the rightmost wall, e.g. if the row is "xx.x.." turn it into ""xx.x..x".
-        let row_bits = row_bits | (1 << cols);
         // iterator *inclusive* so we hit the rightmost wall
         (0..=cols)
             .scan(None, move |gap, j| {
@@ -170,6 +174,17 @@ impl BasicMatrix {
                 }
             })
             .flatten()
+    }
+
+    /// Appends a row to the top of the matrix,
+    pub(crate) fn push_row(&mut self, cells: impl IntoIterator<Item = bool>) {
+        let i = self.rows();
+        self.ensure_row(i);
+        for (j, cell) in cells.into_iter().enumerate().take(self.cols as usize) {
+            if cell {
+                self.set_(i, j as u16);
+            }
+        }
     }
 }
 
@@ -226,9 +241,7 @@ mod test {
 
     #[test]
     fn test_bm_get() {
-        let mut m = BasicMatrix::with_cols(3);
-        m.push_row(vec![true, false, false]);
-        m.push_row(vec![false, true, true]);
+        let m = basic_matrix![[true, false, false], [false, true, true],];
         assert_eq!(m.get((0u16, 0u16)), true);
         assert_eq!(m.get((0u16, 1u16)), false);
         assert_eq!(m.get((0u16, 2u16)), false);
@@ -267,9 +280,15 @@ mod test {
     #[test]
     fn test_bm_macro() {
         let mut m1 = BasicMatrix::with_cols(4);
-        m1.push_row(vec![true, false, false, true]);
-        m1.push_row(vec![false, false, true, true]);
-        let m2 = basic_matrix![[true, false, false, true], [false, false, true, true],];
+        m1.set((0u16, 0u16));
+        m1.set((0u16, 3u16));
+        m1.set((2u16, 2u16));
+        m1.set((2u16, 3u16));
+        let m2 = basic_matrix![
+            [true, false, false, true],
+            [false, false, false, false],
+            [false, false, true, true],
+        ];
         assert_eq!(m1, m2);
     }
 
@@ -367,5 +386,50 @@ mod test {
         assert_eq!(gaps(2), [2..4]);
         assert_eq!(gaps(3), [2..4, 6..7]);
         assert_eq!(gaps(4), [0..4, 6..8]);
+    }
+
+    #[test]
+    fn test_bm_overlaps() {
+        let (xx, __) = (true, false);
+        let mat = basic_matrix![
+            [__, __, __, __, __, __, __, __],
+            [xx, xx, xx, xx, xx, xx, xx, xx],
+            [xx, xx, __, __, xx, xx, xx, xx],
+            [xx, xx, __, __, xx, xx, __, xx],
+            [__, __, __, __, __, xx, __, __],
+        ];
+        let mat2 = basic_matrix![[xx, xx, __, __], [__, __, __, __], [__, __, xx, __]];
+        assert!(!mat.overlaps(&mat2, (0, 0)));
+        assert!(!mat.overlaps(&mat2, (0, 1)));
+        assert!(mat.overlaps(&mat2, (0, 2)));
+        assert!(mat.overlaps(&mat2, (1, 0)));
+        assert!(mat.overlaps(&mat2, (2, 0)));
+        assert!(mat.overlaps(&mat2, (2, 1)));
+        assert!(!mat.overlaps(&mat2, (2, 2)));
+        assert!(mat.overlaps(&mat2, (2, 3)));
+        assert!(mat.overlaps(&mat2, (3, 3)));
+        assert!(!mat.overlaps(&mat2, (4, 3)));
+        assert!(!mat.overlaps(&mat2, (5, 3)));
+    }
+
+    #[test]
+    fn test_bm_overlaps_oob() {
+        let (xx, __) = (true, false);
+        let mat = basic_matrix![
+            [__, __, __, __, __, __, __, __],
+            [xx, xx, xx, xx, xx, xx, xx, xx],
+            [xx, xx, __, __, xx, xx, xx, xx],
+            [xx, xx, __, __, xx, xx, __, xx],
+            [__, __, __, __, __, xx, __, __],
+        ];
+        let mat2 = basic_matrix![
+            [xx, xx, __, __],
+            [__, __, __, __],
+            [__, __, __, __],
+            [xx, __, __, __]
+        ];
+        assert!(!mat.overlaps(&mat2, (0, 6)));
+        assert!(mat.overlaps(&mat2, (0, 7)));
+        assert!(mat.overlaps(&mat2, (0, 8)));
     }
 }

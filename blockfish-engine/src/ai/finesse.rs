@@ -1,31 +1,44 @@
 use crate::{ai::Place, shape::ShapeTable, Input, Orientation};
 
 /// Returns optimal finesse inputs to perform the given placement.
-// TODO: tucks/ spins?
-pub fn inputs(stbl: &ShapeTable, place: &Place) -> impl Iterator<Item = Input> {
+pub fn inputs<'a>(stbl: &ShapeTable, place: &'a Place) -> impl Iterator<Item = Input> + 'a {
     let norm = &stbl[place.norm_id];
-    let targ_col = place.col;
+    let targ_col = place.initial_col;
     let did_hold = place.did_hold;
+    let inputs = place.final_inputs.as_slice();
     norm.orientations()
-        .map(|ori| Inputs::new(did_hold, ori, norm.spawn_col(ori), targ_col))
+        .map(move |ori| {
+            let spawn_col = norm.spawn_col(ori);
+            Inputs::new(did_hold, ori, spawn_col, targ_col, inputs)
+        })
         .min_by_key(|i| i.len())
         .expect("unreachable: shape has no orientations?")
 }
 
-struct Inputs {
+/// Iterator for performing a typical sequence of inputs:
+/// - hold (optional)
+/// - rotate
+/// - left/right tap (TODO: das, das tapback)
+/// - additional inputs (particularly sd + left/right/rotate)
+struct Inputs<'a> {
     hold: bool,
     ori: Orientation,
     taps: i16,
+    after: std::slice::Iter<'a, Input>,
 }
 
-impl Inputs {
-    fn new(hold: bool, ori: Orientation, col0: u16, col1: u16) -> Self {
-        let taps = (col1 as i16) - (col0 as i16);
-        Self { hold, ori, taps }
+impl<'a> Inputs<'a> {
+    fn new(hold: bool, ori: Orientation, col0: u16, col1: u16, after: &'a [Input]) -> Self {
+        Self {
+            hold,
+            ori,
+            taps: (col1 as i16) - (col0 as i16),
+            after: after.iter(),
+        }
     }
 }
 
-impl Iterator for Inputs {
+impl<'a> Iterator for Inputs<'a> {
     type Item = Input;
     fn next(&mut self) -> Option<Input> {
         if self.hold {
@@ -42,7 +55,7 @@ impl Iterator for Inputs {
                     self.taps += 1;
                     Some(Input::Left)
                 } else {
-                    None
+                    self.after.next().cloned()
                 }
             }
             Orientation::R1 => {
@@ -62,17 +75,18 @@ impl Iterator for Inputs {
     }
 }
 
-impl ExactSizeIterator for Inputs {
+impl<'a> ExactSizeIterator for Inputs<'a> {
     fn len(&self) -> usize {
-        let h_count = if self.hold { 1 } else { 0 };
-        let r_count = match self.ori {
+        let mut n = if self.hold { 1 } else { 0 };
+        n += match self.ori {
             Orientation::R0 => 0,
             Orientation::R1 => 1,
             Orientation::R2 => 2,
             Orientation::R3 => 1,
         };
-        let t_count = self.taps.abs() as usize;
-        h_count + r_count + t_count
+        n += self.taps.abs() as usize;
+        n += self.after.len();
+        n
     }
 }
 
@@ -87,14 +101,14 @@ mod test {
     #[test]
     fn test_inputs() {
         use Input::*;
-        let inps1 = Inputs::new(false, Orientation::R1, 3, 5);
-        let inps2 = Inputs::new(false, Orientation::R2, 4, 2);
-        let inps3 = Inputs::new(false, Orientation::R3, 8, 8);
-        let inps4 = Inputs::new(true, Orientation::R0, 8, 9);
+        let inps1 = Inputs::new(false, Orientation::R1, 3, 5, &[]);
+        let inps2 = Inputs::new(false, Orientation::R2, 4, 2, &[SD, Left]);
+        let inps3 = Inputs::new(false, Orientation::R3, 8, 8, &[]);
+        let inps4 = Inputs::new(true, Orientation::R0, 8, 9, &[]);
         assert_eq!(inps1.len(), 3);
         assert_eq!(inps1.collect::<Vec<_>>(), [CW, Right, Right]);
-        assert_eq!(inps2.len(), 4);
-        assert_eq!(inps2.collect::<Vec<_>>(), [CW, CW, Left, Left]);
+        assert_eq!(inps2.len(), 6);
+        assert_eq!(inps2.collect::<Vec<_>>(), [CW, CW, Left, Left, SD, Left]);
         assert_eq!(inps3.len(), 1);
         assert_eq!(inps3.collect::<Vec<_>>(), [CCW]);
         assert_eq!(inps4.len(), 2);
@@ -190,5 +204,18 @@ mod test {
         let mut place = Place::new(z1, (0, 2));
         place.did_hold = true;
         assert_eq!(inputs(&srs, &place).collect::<Vec<_>>(), [Hold, CCW, Left]);
+    }
+
+    #[test]
+    fn test_final_inputs() {
+        use Input::*;
+        let srs = srs();
+        let z1 = srs.iter_norms_by_color(Color('Z')).nth(1).unwrap();
+        let mut place = Place::new(z1, (0, 2));
+        place.final_inputs = vec![SD, Right];
+        assert_eq!(
+            inputs(&srs, &place).collect::<Vec<_>>(),
+            [CCW, Left, SD, Right]
+        );
     }
 }

@@ -143,10 +143,10 @@ impl State {
     }
 
     /// Applies the given placement to this state, modifying the queue and matrix.
-    fn place(&mut self, stbl: &ShapeTable, p: &Place) {
-        stbl[p.norm_id].blit_to(&mut self.matrix, p.row, p.col);
+    fn place(&mut self, stbl: &ShapeTable, pm: &Place) {
+        stbl[pm.norm_id].blit_to(&mut self.matrix, pm.coord);
         self.matrix.sift_rows();
-        self.pop(p.did_hold);
+        self.pop(pm.did_hold);
     }
 
     /// Removes a piece from the next queue, or hold slot if `hold` is `true`.
@@ -353,16 +353,19 @@ mod test {
             std::iter::once(root.clone()),
         )
         .collect::<Vec<_>>();
+        //  | sequence        | placements
+        // -+-----------------+--------------
+        //  | .               | 1
+        //  | L,      T       | 34
+        //  | LT, LJ, TJ, TL  | 34^2
+        //  | LTJ,LJT,TJL,TLJ | 34^3
+        //  | LTI,LJI,TJI,TLI | 34^2 * 17
+        let min_placement_count =
+            1 + (2 * 34) + (4 * 34 * 34) + (4 * 34 * 34 * 34) + (4 * 34 * 34 * 17);
+        // difficult to calculate nubmber of placements taking tucks/spins into account...
         assert_eq!(
-            dfs_nodes.len(),
-            //  | sequence        | placements
-            // -+-----------------+--------------
-            //  | .               | 1
-            //  | L,      T       | 34
-            //  | LT, LJ, TJ, TL  | 34^2
-            //  | LTJ,LJT,TJL,TLJ | 34^3
-            //  | LTI,LJI,TJI,TLI | 34^2 * 17
-            1 + (2 * 34) + (4 * 34 * 34) + (4 * 34 * 34 * 34) + (4 * 34 * 34 * 17)
+            std::cmp::min(dfs_nodes.len(), min_placement_count),
+            min_placement_count
         );
         assert!(dfs_nodes.iter().all(|n| n.depth <= 3));
     }
@@ -392,9 +395,9 @@ mod test {
         let mut ast_traversed = 0u64;
         let mut ast = a_star(PlacementSearch::new(&srs), &sp, vec![root]);
         (&mut ast)
-            .take_while(|n| n.depth < MAX_DEPTH || n.score > best_score)
+            .take_while(|n| n.depth() < MAX_DEPTH || n.score() > best_score)
             .for_each(|n| {
-                println!("--| {:<3} {:?}", n.score, n.state.matrix);
+                println!("--| {:<3} {:?}", n.score(), n.state().matrix);
                 ast_traversed += 1;
             });
 

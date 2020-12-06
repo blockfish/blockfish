@@ -161,7 +161,7 @@ impl AI {
     }
 
     /// Returns an interator over all incoming suggestions from the AI, until it completes.
-    pub fn iter(mut self) -> impl Iterator<Item = Suggestion> {
+    pub fn into_iter(mut self) -> impl Iterator<Item = Suggestion> {
         self.rx.take().into_iter().flatten()
     }
 }

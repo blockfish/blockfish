@@ -67,9 +67,15 @@ impl NormalShape {
             .expect("invalid orientation for this shape")
     }
 
-    /// Blit this shape onto the matrix `tgt` with origin `(i,j)`.
-    pub fn blit_to(&self, tgt: &mut BasicMatrix, i: u16, j: u16) {
-        tgt.blit(&self.matrix, (i, j))
+    /// Blits this shape onto the matrix `tgt` at position with origin `pos`.
+    pub fn blit_to(&self, tgt: &mut BasicMatrix, pos: (u16, u16)) {
+        tgt.blit(&self.matrix, pos)
+    }
+
+    /// Returnst rue if this shape intersects with matrix matrix `tgt` at position with
+    /// origin `pos`.
+    pub fn intersects(&self, tgt: &BasicMatrix, pos: (u16, u16)) -> bool {
+        tgt.overlaps(&self.matrix, pos)
     }
 }
 
