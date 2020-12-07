@@ -1,13 +1,21 @@
-use std::ops::Range;
+use serde::{de::Error, Deserialize, Serialize};
+use std::{
+    convert::{TryFrom, TryInto},
+    ops::Range,
+};
+use thiserror::Error;
 
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct BasicMatrix {
-    // Number of columns.
+    /// Number of columns.
     cols: u16,
-    // Row data.
+    /// Row data. Each row is represented by a bit mask of the occupied cells. All high
+    /// bits after the first `cols` bits are set as well. This way e.g. a completely full
+    /// row is represented by `std::u16::MAX`.
     data: Vec<u16>,
 }
 
+#[cfg(test)]
 #[macro_export]
 macro_rules! basic_matrix {
     [ $r0:tt ] => {
@@ -30,7 +38,7 @@ macro_rules! basic_matrix {
 
 #[inline(always)]
 fn empty_row_bits(cols: u16) -> u16 {
-    std::u16::MAX << cols
+    std::u16::MAX.overflowing_shl(cols.into()).0
 }
 
 #[inline(always)]
@@ -120,10 +128,10 @@ impl BasicMatrix {
     /// Returns true if `mat` overlaps with this matrix, when offset by `(i0, j0)`.
     pub fn overlaps(&self, mat: &BasicMatrix, (i0, j0): (u16, u16)) -> bool {
         let mask = (1 << mat.cols()) - 1;
-        // i < n && (i0 + i) < self.rows()
-        // i < n && i < (self.rows() - i0)
-        // i < min(n, self.rows() - i0)
-        let n = std::cmp::min(self.rows().saturating_sub(i0), mat.rows());
+        // i < mat.rows() && (i0 + i) < self.rows()
+        // i < mat.rows() && i < (self.rows() - i0)
+        // i < min(mat.rows(), self.rows() - i0)
+        let n = std::cmp::min(mat.rows(), self.rows().saturating_sub(i0));
         (0..n).any(|i| {
             let here = self.data[(i0 + i) as usize];
             let there = (mat.data[i as usize] & mask) << j0;
@@ -177,7 +185,10 @@ impl BasicMatrix {
     }
 
     /// Appends a row to the top of the matrix,
-    pub(crate) fn push_row(&mut self, cells: impl IntoIterator<Item = bool>) {
+    // NOTE: currently, only used by `basic_matrix!` macro
+    // TODO: can we remove this entirely?
+    #[cfg(test)]
+    pub fn push_row(&mut self, cells: impl IntoIterator<Item = bool>) {
         let i = self.rows();
         self.ensure_row(i);
         for (j, cell) in cells.into_iter().enumerate().take(self.cols as usize) {
@@ -232,6 +243,76 @@ impl Coord for (i16, i16) {
         } else {
             None
         }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct MatrixWireFormat {
+    cols: u16,
+    data: String,
+}
+
+#[derive(Debug, Error)]
+#[error("encountered invald byte in matrix specification")]
+struct MatrixFormatError;
+
+impl<'a> From<&'a BasicMatrix> for MatrixWireFormat {
+    fn from(bm: &'a BasicMatrix) -> Self {
+        Self {
+            cols: bm.cols(),
+            data: (0..bm.rows())
+                .flat_map(move |i| {
+                    let sep = if i == 0 { None } else { Some(' ') };
+                    let row = (0..bm.cols()).map(move |j| if bm.get((i, j)) { 'x' } else { '.' });
+                    sep.into_iter().chain(row)
+                })
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<MatrixWireFormat> for BasicMatrix {
+    type Error = MatrixFormatError;
+    fn try_from(m: MatrixWireFormat) -> Result<Self, MatrixFormatError> {
+        let mut bm = Self::with_cols(m.cols);
+        let (mut i, mut j) = (0u16, 0u16);
+        for ch in m.data.chars() {
+            match ch {
+                'x' => {
+                    bm.set((i, j));
+                    j += 1;
+                }
+                '.' => {
+                    j += 1;
+                }
+                ' ' => {
+                    j = 0;
+                    i += 1;
+                }
+                _ => return Err(MatrixFormatError),
+            }
+        }
+        Ok(bm)
+    }
+}
+
+impl Serialize for BasicMatrix {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        MatrixWireFormat::from(self).serialize(ser)
+    }
+}
+
+impl<'de> Deserialize<'de> for BasicMatrix {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        MatrixWireFormat::deserialize(de)?
+            .try_into()
+            .map_err(D::Error::custom)
     }
 }
 

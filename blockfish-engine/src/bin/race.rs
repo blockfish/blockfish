@@ -10,8 +10,8 @@ struct Race {
 }
 
 impl Race {
-    fn new(ai_config: Config, rules: std::rc::Rc<Ruleset>) -> Self {
-        let stacker = Stacker::new(rules);
+    fn new(ai_config: Config, rules: Ruleset) -> Self {
+        let stacker = Stacker::new(rules.into());
         Self {
             ai_config,
             stacker,

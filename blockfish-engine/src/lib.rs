@@ -12,3 +12,6 @@ mod stacker_util;
 
 #[cfg(feature = "block-stacker")]
 pub use stacker_util::StackerExt;
+
+#[cfg(feature = "gen-stbl")]
+pub use shape::{srs, ShapeTable};

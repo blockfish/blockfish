@@ -5,6 +5,7 @@ mod resources;
 mod util;
 mod view;
 
+use block_stacker::{Ruleset, Stacker};
 use sdl2::{event::Event, keyboard::Keycode};
 use std::{convert::TryFrom, time::Duration};
 use thiserror::Error;
@@ -73,7 +74,7 @@ fn entry() -> Result<()> {
     let texture_creator = canvas.texture_creator();
     let res = resources::Resources::load(&ttf)?;
 
-    let stacker = block_stacker::Stacker::new(block_stacker::Ruleset::guideline());
+    let stacker = Stacker::new(Ruleset::guideline().into());
     let view = View::new(stacker.ruleset().clone(), res, &canvas, &texture_creator);
     let mut ctl = Controller::new(stacker, view);
 

@@ -1,12 +1,15 @@
+use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use thiserror::Error;
 
 #[cfg(not(test))]
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Color(char);
 
 #[cfg(test)]
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Color(pub char);
 
 #[derive(Debug, Error)]
@@ -37,7 +40,7 @@ impl std::fmt::Debug for Color {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, Ord, PartialOrd)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 #[repr(u8)]
 #[allow(dead_code)]
 pub enum Orientation {
@@ -55,6 +58,16 @@ impl Default for Orientation {
 
 #[allow(dead_code)]
 impl Orientation {
+    #[inline(always)]
+    pub fn as_i32(self) -> i32 {
+        match self {
+            Orientation::R0 => 0,
+            Orientation::R1 => 1,
+            Orientation::R2 => 2,
+            Orientation::R3 => 3,
+        }
+    }
+
     pub fn cw(self) -> Orientation {
         match self {
             Orientation::R0 => Orientation::R1,
@@ -83,7 +96,7 @@ impl Orientation {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, Ord, PartialOrd)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Input {
     Left,

@@ -1,37 +1,47 @@
-use std::{collections::BTreeMap, convert::TryInto as _};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::{
-    basic_matrix,
     common::{Color, Orientation},
     matrix::BasicMatrix,
 };
-
-//////////////////////////////////////////////////////////////////////////////////////////
-// Shapes
 
 /// Represents the "normalized" form of a polymino, which can be achieved
 /// by one or more rotations. In particular, the S, Z and I pieces have two distinct
 /// normal forms, the O piece has only 1 normal form, and the T, J, and L pieces have 4
 /// distinct normal forms.
-// TODO: Eq and Hash
-#[derive(Clone, Debug)]
+#[derive(Eq, PartialEq, Debug, Serialize, Deserialize)]
 pub struct NormalShape {
     /// The matrix representation of the shape.
     matrix: BasicMatrix,
-    /// Mapping from each of the orientations that lead to this normalized shape, to the
-    /// column it spawns at, at that orientation. For instance, the S and Z pieces are at
-    /// different columns in the R1 and R3 orientations, even though these orientations
-    /// share a normalized form.
-    // TODO: lighter representation of this mapping, esp. consider there are only 4
-    // possible orientations.
-    spawn_col: BTreeMap<Orientation, u16>,
+    /// Bit mask for each of the orientations that lead to this normalized shape. For
+    /// instance, the S piece shares a norm for the R0/R2 orientations, as well as R1/R3.
+    oris: u8,
+    /// Initial spawn column for this shape at each orientation.
+    spawn_col: [u16; 4],
 }
+
+const ALL_ORIENTATIONS: [Orientation; 4] = {
+    use Orientation::*;
+    [R0, R1, R2, R3]
+};
 
 impl NormalShape {
     /// Construct a new `NormalShape`.
-    fn new(matrix: BasicMatrix, spawn_col: BTreeMap<Orientation, u16>) -> Self {
-        assert!(!spawn_col.is_empty());
-        NormalShape { matrix, spawn_col }
+    fn new(matrix: BasicMatrix) -> Self {
+        Self {
+            matrix,
+            oris: 0u8,
+            spawn_col: [0; 4],
+        }
+    }
+
+    /// Sets the spawn location of this shape to be at `col` for orientation `ori`. Also
+    /// adds `ori` to the list of valid orientations for this norm (i.e., returned by
+    /// `.orientations()`).
+    fn set_spawn(&mut self, ori: Orientation, col: u16) {
+        self.oris |= 1 << ori as u8;
+        self.spawn_col[ori as usize] = col;
     }
 
     /// Returns the width of this shape.
@@ -54,17 +64,18 @@ impl NormalShape {
 
     /// Returns the orientations that lead to this normalized form.
     pub fn orientations<'a>(&'a self) -> impl Iterator<Item = Orientation> + 'a {
-        self.spawn_col.keys().cloned()
+        let oris = self.oris;
+        ALL_ORIENTATIONS
+            .iter()
+            .cloned()
+            .filter(move |&ori| oris & (1 << (ori as u8)) != 0)
     }
 
     /// Returns the absolute column of this piece after rotating to the given orientation
     /// directly after spawn. For instance, the S and Z pieces are at different columns in
     /// the R1 and R3 orientations.
     pub fn spawn_col(&self, ori: Orientation) -> u16 {
-        *self
-            .spawn_col
-            .get(&ori)
-            .expect("invalid orientation for this shape")
+        self.spawn_col[ori as usize]
     }
 
     /// Blits this shape onto the matrix `tgt` at position with origin `pos`.
@@ -84,27 +95,13 @@ impl NormalShape {
 
 /// Table containing all of the available shapes in the rotation system, in their
 /// normalized forms.
+#[derive(Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct ShapeTable {
     by_color: BTreeMap<Color, Vec<NormalShape>>,
 }
 
 impl ShapeTable {
-    /// Constructs an empty new `ShapeTable`.
-    fn new() -> Self {
-        ShapeTable {
-            by_color: BTreeMap::new(),
-        }
-    }
-
-    /// Inserts a `NormalShape` into the table, returning an ID that can be used to refer
-    /// to the shape later.
-    fn insert_norm(&mut self, color: Color, norm: NormalShape) -> NormalShapeId {
-        let norms = self.by_color.entry(color).or_default();
-        let idx = norms.len();
-        norms.push(norm);
-        NormalShapeId(color, idx)
-    }
-
     /// Lists all `NormalShapeId`s for color `Color`.
     pub fn iter_norms_by_color(&self, color: Color) -> impl Iterator<Item = NormalShapeId> {
         let len = self.by_color.get(&color).map(Vec::len).unwrap_or(0);
@@ -140,66 +137,76 @@ impl std::fmt::Debug for NormalShapeId {
     }
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////
-// SRS
+/// Returns `(origin_row, origin_col, mat)` where `mat` is a normalized (no empty rows or
+/// columns on the far sides) view of the coords, with `(origin_row, origin_col)` as the
+/// origin.
+fn normalize_coords(coords: &[(u16, u16)]) -> (u16, u16, BasicMatrix) {
+    assert!(!coords.is_empty());
+    let min_row = coords.iter().map(|&(i, _)| i).min().unwrap();
+    let min_col = coords.iter().map(|&(_, j)| j).min().unwrap();
+    let max_col = coords.iter().map(|&(_, j)| j).max().unwrap();
+    let mut mat = BasicMatrix::with_cols(max_col + 1 - min_col);
+    for &(row, col) in coords.iter() {
+        mat.set((row - min_row, col - min_col));
+    }
+    (min_row, min_col, mat)
+}
 
-/// Returns a new copy of the shape table corresponding to the standard rotation system.
-pub fn srs() -> ShapeTable {
-    use Orientation::*;
+/// Returns the set of normalized shapes resulting from viewing a shape by its at
+/// different rotations. The provided closure `get_coords` is called to get the
+/// coordinates at a particular rotation.
+fn normal_shapes<F, I>(get_coords: F) -> Vec<NormalShape>
+where
+    F: Fn(Orientation) -> I,
+    I: IntoIterator<Item = (u16, u16)>,
+{
+    let mut norms = vec![];
+    let mut norm_idx = std::collections::HashMap::new();
+    let mut coords = vec![];
 
-    let mut shapes = ShapeTable::new();
-    macro_rules! shape {
-        ($col:expr => [$(($rots:expr, $mat:expr)),* $(,)?]) => {
-            $({
-                shapes.insert_norm(
-                    ($col).try_into().unwrap(),
-                    NormalShape::new(
-                        $mat,
-                        $rots.into_iter().collect(),
-                    ),
-                );
-            })*
-        };
+    for &ori in ALL_ORIENTATIONS.iter() {
+        coords.clear();
+        coords.extend(get_coords(ori));
+        let (_, col, mat) = normalize_coords(&coords);
+        let idx = *norm_idx.entry(mat.clone()).or_insert_with(|| {
+            let norm = NormalShape::new(mat);
+            norms.push(norm);
+            norms.len() - 1
+        });
+        norms[idx].set_spawn(ori, col);
     }
 
-    let xx = true;
-    let __ = false;
-    shape!('L' => [
-        (vec![(R0, 3)], basic_matrix![[xx, xx, xx], [__, __, xx]]),
-        (vec![(R1, 4)], basic_matrix![[xx, xx], [xx, __], [xx, __]]),
-        (vec![(R2, 3)], basic_matrix![[xx, __, __], [xx, xx, xx]]),
-        (vec![(R3, 3)], basic_matrix![[__, xx], [__, xx], [xx, xx]]),
-    ]);
-    shape!('J' => [
-        (vec![(R0, 3)], basic_matrix![[xx, xx, xx], [xx, __, __]]),
-        (vec![(R1, 4)], basic_matrix![[xx, __], [xx, __], [xx, xx]]),
-        (vec![(R2, 3)], basic_matrix![[__, __, xx], [xx, xx, xx]]),
-        (vec![(R3, 3)], basic_matrix![[xx, xx], [__, xx], [__, xx]]),
-    ]);
-    shape!('T' => [
-        (vec![(R0, 3)], basic_matrix![[xx, xx, xx], [__, xx, __]]),
-        (vec![(R1, 4)], basic_matrix![[xx, __], [xx, xx], [xx, __]]),
-        (vec![(R2, 3)], basic_matrix![[__, xx, __], [xx, xx, xx]]),
-        (vec![(R3, 3)], basic_matrix![[__, xx], [xx, xx], [__, xx]]),
-    ]);
-    shape!('O' => [
-        (vec![(R0, 4), (R1, 4), (R2, 4), (R3, 4)],
-         basic_matrix![[xx, xx], [xx, xx]])
-    ]);
-    shape!('I' => [
-        (vec![(R0, 3), (R2, 3)], basic_matrix![[xx, xx, xx, xx]]),
-        (vec![(R1, 5), (R3, 4)], basic_matrix![[xx], [xx], [xx], [xx]]),
-    ]);
-    shape!('S' => [
-        (vec![(R0, 3), (R2, 3)], basic_matrix![[xx, xx, __], [__, xx, xx]]),
-        (vec![(R1, 4), (R3, 3)], basic_matrix![[__, xx], [xx, xx], [xx, __]]),
-    ]);
-    shape!('Z' => [
-        (vec![(R0, 3), (R2, 3)], basic_matrix![[__, xx, xx], [xx, xx, __]]),
-        (vec![(R1, 4), (R3, 3)], basic_matrix![[xx, __], [xx, xx], [__, xx]]),
-    ]);
+    norms
+}
 
-    shapes
+#[cfg(feature = "block-stacker")]
+impl ShapeTable {
+    #[allow(unused)]
+    pub fn from_ruleset(rules: &block_stacker::Ruleset) -> Self {
+        use std::convert::TryFrom;
+        let by_color = rules
+            .types()
+            .flat_map(|typ| {
+                let (i0, j0) = rules.spawn(typ);
+                let color = Color::try_from(typ).ok()?;
+                let shapes = normal_shapes(|rot| {
+                    rules
+                        .coords(typ, rot.as_i32())
+                        .map(|(i, j)| (i + i0 as u16, j + j0 as u16))
+                });
+                Some((color, shapes))
+            })
+            .collect();
+
+        Self { by_color }
+    }
+}
+
+static SRS_BYTES: &[u8] = include_bytes!("../../support/test/srs-shape-table.json");
+
+/// Returns a new copy of the SRS shape table.
+pub fn srs() -> ShapeTable {
+    serde_json::from_slice(SRS_BYTES).expect("BUG: SRS data is malformed!")
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -207,6 +214,7 @@ pub fn srs() -> ShapeTable {
 #[cfg(test)]
 mod test {
     pub use super::*;
+    use crate::basic_matrix;
 
     #[test]
     fn test_srs_count() {
@@ -235,5 +243,60 @@ mod test {
         let z1 = srs.iter_norms_by_color(Color('Z')).nth(1).unwrap();
         assert_eq!(srs[z1].bottom(0), 0);
         assert_eq!(srs[z1].bottom(1), 1);
+    }
+
+    #[test]
+    fn test_normalize_coords() {
+        let (i, j, mat) = normalize_coords(&[
+            // - - x x x
+            // - - . . x
+            // - - - - -
+            (2, 2),
+            (1, 4),
+            (2, 4),
+            (2, 3),
+        ]);
+        assert_eq!((i, j), (1, 2));
+        assert_eq!(mat, basic_matrix![[false, false, true], [true, true, true]]);
+    }
+
+    #[test]
+    fn test_normal_shapes_z() {
+        let shapes = normal_shapes(|o| match o {
+            // . . . Z Z . . . . .
+            // . . . . Z Z . . . .
+            // . . . . . . . . . .
+            Orientation::R0 => vec![(1, 4), (1, 5), (2, 3), (2, 4)],
+            // . . . . . Z . . . .
+            // . . . . Z Z . . . .
+            // . . . . Z . . . . .
+            Orientation::R1 => vec![(0, 4), (1, 4), (1, 5), (2, 5)],
+            // . . . . . . . . . .
+            // . . . Z Z . . . . .
+            // . . . . Z Z . . . .
+            Orientation::R2 => vec![(0, 4), (0, 5), (1, 3), (1, 4)],
+            // . . . . Z . . . . .
+            // . . . Z Z . . . . .
+            // . . . Z . . . . . .
+            Orientation::R3 => vec![(0, 3), (1, 3), (1, 4), (2, 4)],
+        });
+        let srs = srs();
+        let srs_zs = srs.by_color.get(&Color('Z')).unwrap();
+        assert_eq!(&shapes, srs_zs);
+    }
+
+    #[cfg(feature = "block-stacker")]
+    #[test]
+    fn test_block_stacker_srs() {
+        let stbl = ShapeTable::from_ruleset(&block_stacker::Ruleset::guideline());
+        let srs = srs();
+        for color in "OILJTSZ".chars().map(Color) {
+            assert_eq!(
+                stbl.by_color.get(&color),
+                srs.by_color.get(&color),
+                "same as SRS: {:?}",
+                color
+            );
+        }
     }
 }

@@ -205,6 +205,6 @@ mod test {
 
     #[test]
     fn test_negative_spaces_all_clear() {
-        assert_eq!(neg_space(BasicMatrix::with_cols(5)), []);
+        assert_eq!(neg_space(BasicMatrix::with_cols(5)), [0u16; 0]);
     }
 }

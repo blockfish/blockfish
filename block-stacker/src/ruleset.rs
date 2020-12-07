@@ -1,9 +1,10 @@
 use super::PieceType;
-use std::{collections::HashMap, rc::Rc};
+use serde::Deserialize;
+use std::collections::HashMap;
 
 /// Represents a specification of the game rules, such as the matrix size, the number of
 /// previews, and the shape information for every mino.
-#[derive(Debug)]
+#[derive(Deserialize)]
 pub struct Ruleset {
     /// Number of columns in the matrix.
     pub cols: usize,
@@ -20,7 +21,7 @@ pub struct Ruleset {
 }
 
 /// Represents the specification of one poly-mino.
-#[derive(Clone, Debug)]
+#[derive(Deserialize)]
 struct PolyMino {
     /// The width/height of the bounding box surrounding `coords` (used for rotating).
     width: u16,
@@ -41,98 +42,31 @@ enum Kick {
     CCW(u8),
 }
 
+impl<'de> Deserialize<'de> for Kick {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error;
+        let s = String::deserialize(de)?;
+        match s.chars().nth(0) {
+            Some('>') => s[1..].parse().map(Kick::CW).map_err(D::Error::custom),
+            Some('<') => s[1..].parse().map(Kick::CCW).map_err(D::Error::custom),
+            _ => Err(D::Error::custom("bad kick specification")),
+        }
+    }
+}
+
+static GUIDELINE_BYTES: &[u8] = include_bytes!("../../support/guideline.json");
+
 impl Ruleset {
-    // TODO: parsing rules from text specification
-
     /// Returns a copy of the guideline rules.
-    pub fn guideline() -> Rc<Ruleset> {
-        let mut minos = HashMap::new();
-
-        // J, L, S, T, Z
-
-        let mut jlstz_kicks = HashMap::with_capacity(16);
-        macro_rules! jlstz_kick {
-            ($dir:ident($offs:expr), $kicks:expr) => {
-                jlstz_kicks.insert(Kick::$dir($offs), $kicks)
-            };
-        }
-        macro_rules! jlstz {
-            ($col:expr, $coords:expr) => {
-                minos.insert(
-                    $col,
-                    PolyMino {
-                        width: 3,
-                        coords: $coords,
-                        spawn: (18, 3),
-                        kicks: jlstz_kicks.clone(),
-                    },
-                )
-            };
-        }
-        jlstz_kick!(CW(0), vec![(0, 0), (0, -1), (-1, -1), (2, 0), (2, -1)]);
-        jlstz_kick!(CW(1), vec![(0, 0), (0, -1), (1, -1), (-2, 0), (-2, -1)]);
-        jlstz_kick!(CW(2), vec![(0, 0), (0, 1), (-1, 1), (2, 0), (2, 1)]);
-        jlstz_kick!(CW(3), vec![(0, 0), (0, 1), (1, 1), (-2, 0), (-2, 1)]);
-        jlstz_kick!(CCW(0), vec![(0, 0), (0, 1), (-1, 1), (2, 0), (2, 1)]);
-        jlstz_kick!(CCW(1), vec![(0, 0), (0, -1), (1, -1), (-2, 0), (-2, -1)]);
-        jlstz_kick!(CCW(2), vec![(0, 0), (0, -1), (-1, -1), (2, 0), (2, -1)]);
-        jlstz_kick!(CCW(3), vec![(0, 0), (0, 1), (1, 1), (-2, 0), (-2, 1)]);
-        jlstz!('J', vec![(1, 0), (1, 1), (1, 2), (2, 0)]);
-        jlstz!('L', vec![(1, 0), (1, 1), (1, 2), (2, 2)]);
-        jlstz!('S', vec![(1, 0), (1, 1), (2, 1), (2, 2)]);
-        jlstz!('T', vec![(1, 0), (1, 1), (1, 2), (2, 1)]);
-        jlstz!('Z', vec![(1, 1), (1, 2), (2, 0), (2, 1)]);
-
-        // I
-
-        let mut i_kicks = HashMap::with_capacity(16);
-        macro_rules! i_kick {
-            ($dir:ident($offs:expr), $kicks:expr) => {
-                i_kicks.insert(Kick::$dir($offs), $kicks)
-            };
-        }
-        i_kick!(CW(0), vec![(0, 0), (0, 1), (0, -2), (-2, 1), (1, -2)]);
-        i_kick!(CW(1), vec![(0, 0), (0, -2), (0, 1), (-1, -2), (2, 1)]);
-        i_kick!(CW(2), vec![(0, 0), (0, -1), (0, 2), (2, -1), (-1, -2)]);
-        i_kick!(CW(3), vec![(0, 0), (0, 2), (0, -1), (1, 2), (-2, -1)]);
-        i_kick!(CCW(0), vec![(0, 0), (0, 2), (0, -1), (1, 2), (-2, -1)]);
-        i_kick!(CCW(1), vec![(0, 0), (0, 1), (0, -2), (-2, 1), (1, -2)]);
-        i_kick!(CCW(2), vec![(0, 0), (0, -2), (0, 1), (-1, -2), (2, 1)]);
-        i_kick!(CCW(3), vec![(0, 0), (0, -1), (0, 2), (2, -1), (-1, 2)]);
-        minos.insert(
-            'I',
-            PolyMino {
-                width: 4,
-                coords: vec![(2, 0), (2, 1), (2, 2), (2, 3)],
-                spawn: (17, 3),
-                kicks: i_kicks,
-            },
-        );
-
-        // O
-
-        minos.insert(
-            'O',
-            PolyMino {
-                width: 4,
-                coords: vec![(1, 1), (1, 2), (2, 1), (2, 2)],
-                spawn: (18, 3),
-                kicks: HashMap::new(),
-            },
-        );
-
-        Rc::new(Ruleset {
-            cols: 10,
-            rows: 25,
-            visible_rows: 20,
-            garbage_height: 8,
-            previews: 5,
-            minos,
-        })
+    pub fn guideline() -> Ruleset {
+        serde_json::from_slice(GUIDELINE_BYTES).expect("BUG: guideline data is malformed!")
     }
 
     fn mino(&self, typ: PieceType) -> &PolyMino {
-        self.minos.get(&typ).expect("bug: no such mino")
+        self.minos.get(&typ).expect("BUG: no such mino")
     }
 
     /// Returns a list of every color of shape per this ruleset.
@@ -200,16 +134,37 @@ fn rotate_coord(mut coord: (u16, u16), w: u16, r: i32) -> (u16, u16) {
 }
 
 /// "Normalizes" rotation `r` to be in the range [0, 3).
-///
-/// `normalize_rot(1)` = `1`
-/// `normalize_rot(4)` = `0`
-/// `normalize_rot(-1)` = `3`
-/// `normalize_rot(-6)` = `2`
 fn normalize_rot(r: i32) -> u8 {
     let r = r % 4;
     if r < 0 {
         (r + 4) as u8
     } else {
         r as u8
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_rotate_coord() {
+        assert_eq!(rotate_coord((1, 3), 4, 3), (3, 2));
+    }
+
+    #[test]
+    fn test_normalize_rot() {
+        assert_eq!(normalize_rot(1), 1);
+        assert_eq!(normalize_rot(4), 0);
+        assert_eq!(normalize_rot(-1), 3);
+        assert_eq!(normalize_rot(-6), 2);
+    }
+
+    #[test]
+    fn test_guideline_o_kicks() {
+        let rules = Ruleset::guideline();
+        for &r in &[-2, -1, 0, 1, 2, 3] {
+            assert_eq!(rules.kicks('O', 1, r).collect::<Vec<_>>(), [(0, 0)]);
+        }
     }
 }

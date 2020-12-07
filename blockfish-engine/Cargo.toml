@@ -9,15 +9,23 @@ name = "blockfish-race"
 path = "src/bin/race.rs"
 required-features = ["block-stacker"]
 
+[[bin]]
+name = "blockfish-generate-shape-table"
+path = "src/bin/gen_stbl.rs"
+required-features = ["gen-stbl"]
+
 [features]
 default = []
 slow-tests = []
+gen-stbl = ["block-stacker"]
 
 [dependencies]
 thiserror = "1.0"
 log = "0.4.8"
 rand = "0.7"
 red_union_find = "0.2.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [dependencies.block-stacker]
 path = "../block-stacker"
