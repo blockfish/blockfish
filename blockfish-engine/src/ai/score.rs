@@ -16,7 +16,7 @@ impl Default for ScoreParams {
         Self {
             row_factor: 50,
             nspace_factor: 10,
-            piece_penalty: 40,
+            piece_penalty: 30,
         }
     }
 }

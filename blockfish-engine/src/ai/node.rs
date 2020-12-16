@@ -1,9 +1,9 @@
 use super::{
-    place::{Place, PlacementSearch},
+    place::Place,
     score::{penalty, score, ScoreParams},
     Snapshot,
 };
-use crate::{shape::ShapeTable, BasicMatrix, Color};
+use crate::{BasicMatrix, Color};
 
 /// Search node.
 #[derive(Clone)]
@@ -48,6 +48,8 @@ impl Node {
         }
     }
 
+    // just accessors
+
     pub fn state(&self) -> &State {
         &self.state
     }
@@ -64,29 +66,20 @@ impl Node {
         self.depth as usize
     }
 
-    /// Returns a list of the "successor" to this node, using placements computed by the
-    /// placement search `search`, and scores the successor using the parameters specified
-    /// in `scoring`.
-    pub fn successors<'a>(
-        &'a self,
-        search: &'a PlacementSearch,
-        scoring: &'a ScoreParams,
-    ) -> impl Iterator<Item = Node> + 'a {
-        search.placements().enumerate().map(move |(idx, place)| {
-            let mut node = self.clone();
-            node.place(search.shape_table(), scoring, &place);
-            if node.root_idx == std::u16::MAX {
-                node.root_idx = idx as u16;
-            }
-            node
-        })
-    }
-
-    fn place(&mut self, stbl: &ShapeTable, sp: &ScoreParams, place: &Place) {
-        self.state.place(&stbl, &place);
-        self.depth += 1;
-        self.score = score(sp, &self.state.matrix);
-        self.penalty = penalty(sp, self.depth());
+    /// Builds and returns a successor node derived from this node and the placement
+    /// `place`, using `scoring` to score the returned node. `idx` is used to update the
+    /// traceback.
+    pub fn successor(&self, scoring: &ScoreParams, idx: usize, place: &Place) -> Self {
+        assert!(idx < (std::u16::MAX as _));
+        let mut succ = self.clone();
+        if succ.root_idx == std::u16::MAX {
+            succ.root_idx = idx as u16;
+        }
+        succ.state.place(&place);
+        succ.depth += 1;
+        succ.score = score(scoring, &succ.state.matrix);
+        succ.penalty = penalty(scoring, succ.depth());
+        succ
     }
 }
 
@@ -143,10 +136,10 @@ impl State {
     }
 
     /// Applies the given placement to this state, modifying the queue and matrix.
-    fn place(&mut self, stbl: &ShapeTable, pm: &Place) {
-        stbl[pm.norm_id].blit_to(&mut self.matrix, pm.coord);
+    fn place(&mut self, pl: &Place) {
+        pl.shape().blit_to(&mut self.matrix, pl.transform());
         self.matrix.sift_rows();
-        self.pop(pm.did_hold);
+        self.pop(pl.did_hold());
     }
 
     /// Removes a piece from the next queue, or hold slot if `hold` is `true`.
@@ -188,15 +181,10 @@ impl From<Snapshot> for State {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{basic_matrix, shape::srs};
+    use crate::{basic_matrix, shape::srs, Orientation::*};
 
     #[cfg(feature = "slow-tests")]
-    use crate::ai::{a_star::a_star, dfs::dfs};
-
-    fn place(stbl: &ShapeTable, color: Color, rot: usize, row: u16, col: u16) -> Place {
-        let norm_id = stbl.iter_norms_by_color(color).nth(rot).unwrap();
-        Place::new(norm_id, (row, col))
-    }
+    use crate::ai::{a_star::AStar, dfs::DFS};
 
     #[test]
     fn test_state_operations() {
@@ -215,7 +203,9 @@ mod test {
 
         let srs = srs();
         for (i, color) in queue().enumerate() {
-            s.place(&srs, &place(&srs, color, 0, (i * 2) as u16, 0));
+            let shape = srs.shape(color).unwrap();
+            let tf = ((i * 2) as i16 - 1, 0, R0);
+            s.place(&Place::new(shape, tf, false));
         }
         assert!(s.is_max_depth());
         assert_eq!(s.matrix.rows(), 7);
@@ -284,43 +274,33 @@ mod test {
             .into(),
         );
         assert_eq!(node.depth, 0);
+        assert_eq!(node.root_idx(), None);
 
         // x . . . L
         // x x L L L  ==>  x . . . L
-        node.place(&srs, &sp, &place(&srs, Color('L'), 0, 0, 2));
+        let l = srs.shape(Color('L')).unwrap();
+        let tf = (-1, 2, R0);
+        node = node.successor(&sp, 3, &Place::new(l, tf, false));
         assert_eq!(node.depth, 1);
         assert_eq!(node.state.next().0, Some(Color('O')));
         assert_eq!(node.state.matrix(), &basic_matrix![[xx, __, __, __, xx]]);
+        assert_eq!(node.root_idx(), Some(3));
 
-        // O O . . .                              . . . O O
-        // O O . . .    . O O . .    . . O O .    . . . O O
-        // x . . . L    x O O . L    x . O O L    x . . . L
-        //    (1)          (2)          (3)          (4)
-        let mut ps = PlacementSearch::new(&srs);
-        ps.compute(&node.state);
+        // O O . . .
+        // O O . . .
+        // x . . . L
+        let o = srs.shape(Color('O')).unwrap();
+        let tf = (0, -1, R0);
+        node = node.successor(&sp, 4, &Place::new(o, tf, false));
+        assert_eq!(node.depth(), 2);
+        assert!(node.state.is_max_depth());
+        assert_eq!(node.root_idx(), Some(3)); // note: didn't change
         assert_eq!(
-            node.successors(&ps, &sp)
-                .enumerate()
-                .map(|(idx, node)| {
-                    assert_eq!(node.root_idx(), Some(idx));
-                    assert_eq!(node.depth(), 2);
-                    assert!(node.state.is_max_depth());
-                    node.state.matrix().clone()
-                })
-                .collect::<Vec<_>>(),
-            [
-                basic_matrix![
-                    [xx, __, __, __, xx],
-                    [xx, xx, __, __, __],
-                    [xx, xx, __, __, __],
-                ],
-                basic_matrix![[xx, xx, xx, __, xx], [__, xx, xx, __, __],],
-                basic_matrix![[xx, __, xx, xx, xx], [__, __, xx, xx, __],],
-                basic_matrix![
-                    [xx, __, __, __, xx],
-                    [__, __, __, xx, xx],
-                    [__, __, __, xx, xx],
-                ],
+            node.state.matrix,
+            basic_matrix![
+                [xx, __, __, __, xx],
+                [xx, xx, __, __, __],
+                [xx, xx, __, __, __],
             ]
         );
     }
@@ -346,13 +326,7 @@ mod test {
         let srs = srs();
         let sp = ScoreParams::default();
         let root = Node::new(snapshot_ex_4l_cheese().into());
-        let dfs_nodes = dfs(
-            PlacementSearch::new(&srs),
-            &sp,
-            3,
-            std::iter::once(root.clone()),
-        )
-        .collect::<Vec<_>>();
+        let dfs_nodes = DFS::new(&srs, &sp, 3, root.clone()).collect::<Vec<_>>();
         //  | sequence        | placements
         // -+-----------------+--------------
         //  | .               | 1
@@ -362,12 +336,13 @@ mod test {
         //  | LTI,LJI,TJI,TLI | 34^2 * 17
         let min_placement_count =
             1 + (2 * 34) + (4 * 34 * 34) + (4 * 34 * 34 * 34) + (4 * 34 * 34 * 17);
-        // difficult to calculate nubmber of placements taking tucks/spins into account...
+        // difficult to calculate number of placements taking tucks/spins into account...
         assert_eq!(
             std::cmp::min(dfs_nodes.len(), min_placement_count),
             min_placement_count
         );
         assert!(dfs_nodes.iter().all(|n| n.depth <= 3));
+        println!("{} >= {}", dfs_nodes.len(), min_placement_count);
     }
 
     #[cfg(feature = "slow-tests")]
@@ -381,25 +356,26 @@ mod test {
         let mut best_score = std::i64::MAX;
 
         let mut dfs_traversed = 0u64;
-        dfs(
-            PlacementSearch::new(&srs),
-            &sp,
-            MAX_DEPTH,
-            std::iter::once(root.clone()),
-        )
-        .for_each(|n| {
-            dfs_traversed += 1;
-            best_score = std::cmp::min(best_score, n.score);
-        });
+        if option_env!("SKIP_DFS_TEST").is_some() {
+            // experimental result
+            // last collected:
+            //   Tue Dec 15 10:23:14 PM EST 2020
+            // patch:
+            //   fdbfb13418cd71ac52d3b7368b15c49ee50adddc (v0.5.5/dev-kicks)
+            dfs_traversed = 10_990_644;
+            best_score = 260;
+        } else {
+            for n in DFS::new(&srs, &sp, MAX_DEPTH, root.clone()) {
+                dfs_traversed += 1;
+                best_score = std::cmp::min(best_score, n.score);
+            }
+        }
 
         let mut ast_traversed = 0u64;
-        let mut ast = a_star(PlacementSearch::new(&srs), &sp, vec![root]);
+        let mut ast = AStar::new(&srs, &sp, 10_000, root);
         (&mut ast)
             .take_while(|n| n.depth() < MAX_DEPTH || n.score() > best_score)
-            .for_each(|n| {
-                println!("--| {:<3} {:?}", n.score(), n.state().matrix);
-                ast_traversed += 1;
-            });
+            .for_each(|_| ast_traversed += 1);
 
         println!("");
         println!("best score @ depth {}: {}", MAX_DEPTH, best_score);

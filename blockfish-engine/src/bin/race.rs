@@ -59,10 +59,12 @@ fn main() {
     }
 
     let end = Instant::now();
+    let time = end - start;
+    let pps = race.pc as f64 / time.as_secs_f64();
     println!("\r----------------------------------------------------");
     println!("{} pieces", race.pc);
     println!("{} cleared", race.ds);
-    println!("total time: {:.2}s", (end - start).as_secs_f64());
+    println!("total time: {:.2}s ({:.2}pps)", time.as_secs_f64(), pps);
 }
 
 fn print_stats(race: &Race, time: Option<Duration>) {

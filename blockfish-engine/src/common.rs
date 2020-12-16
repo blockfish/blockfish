@@ -56,24 +56,22 @@ impl Default for Orientation {
     }
 }
 
-#[allow(dead_code)]
 impl Orientation {
-    #[inline(always)]
-    pub fn as_i32(self) -> i32 {
-        match self {
-            Orientation::R0 => 0,
-            Orientation::R1 => 1,
-            Orientation::R2 => 2,
-            Orientation::R3 => 3,
-        }
-    }
-
     pub fn cw(self) -> Orientation {
         match self {
             Orientation::R0 => Orientation::R1,
             Orientation::R1 => Orientation::R2,
             Orientation::R2 => Orientation::R3,
             Orientation::R3 => Orientation::R0,
+        }
+    }
+
+    pub fn cw_acyclic(self) -> Option<Orientation> {
+        match self {
+            Orientation::R0 => Some(Orientation::R1),
+            Orientation::R1 => Some(Orientation::R2),
+            Orientation::R2 => Some(Orientation::R3),
+            Orientation::R3 => None,
         }
     }
 
@@ -86,13 +84,18 @@ impl Orientation {
         }
     }
 
-    pub fn flip(self) -> Orientation {
-        match self {
-            Orientation::R0 => Orientation::R2,
-            Orientation::R1 => Orientation::R3,
-            Orientation::R2 => Orientation::R0,
-            Orientation::R3 => Orientation::R1,
+    pub fn from_u8(x: u8) -> Option<Self> {
+        match x {
+            0 => Some(Orientation::R0),
+            1 => Some(Orientation::R1),
+            2 => Some(Orientation::R2),
+            3 => Some(Orientation::R3),
+            _ => None,
         }
+    }
+
+    pub fn iter_all() -> impl Iterator<Item = Orientation> {
+        std::iter::successors(Some(Orientation::R0), |r| r.cw_acyclic())
     }
 }
 
@@ -106,4 +109,22 @@ pub enum Input {
     Hold,
     SD,
     HD,
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_all_orientations() {
+        assert_eq!(
+            Orientation::iter_all().collect::<Vec<_>>(),
+            [
+                Orientation::R0,
+                Orientation::R1,
+                Orientation::R2,
+                Orientation::R3,
+            ]
+        );
+    }
 }

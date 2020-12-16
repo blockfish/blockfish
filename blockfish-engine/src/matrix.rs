@@ -75,46 +75,25 @@ impl BasicMatrix {
     /// considered occupied, unless the coordinate is above the highest row, in which case
     /// it is considered empty. This is to emulate an infinitely tall matrix.
     // TODO: infinite height configurable?
-    #[inline(always)]
-    pub fn get(&self, coord: impl Coord) -> bool {
-        if let Some((i, j)) = coord.check_coord(self.cols) {
-            self.get_(i, j)
-        } else {
-            true
-        }
-    }
-
-    fn get_(&self, i: u16, j: u16) -> bool {
+    pub fn get(&self, (i, j): (u16, u16)) -> bool {
         self.data
             .get(i as usize)
             .map(|row_bits| row_bits & (1 << j) != 0)
-            .unwrap_or(false)
+            .unwrap_or_else(|| j >= self.cols)
     }
 
     /// Set the given coordinate to become occupied. If the coordinate is out of bounds,
     /// does nothing.
-    #[inline(always)]
-    pub fn set(&mut self, coord: impl Coord) {
-        if let Some((i, j)) = coord.check_coord(self.cols) {
-            self.set_(i, j);
+    pub fn set(&mut self, (i, j): (u16, u16)) {
+        if j < self.cols {
+            self.ensure_row(i);
+            self.data[i as usize] |= 1 << j;
         }
     }
 
-    fn set_(&mut self, i: u16, j: u16) {
-        self.ensure_row(i);
-        self.data[i as usize] |= 1 << j;
-    }
-
-    /// Blit matrix `src` onto this matrix with origin `dst`, setting all corresponing
+    /// Blit matrix `mat` onto this matrix with origin `(i0, j0)`, setting all corresponing
     /// occupied cells.
-    #[inline(always)]
-    pub fn blit(&mut self, src: &BasicMatrix, dst: impl Coord) {
-        if let Some((i, j)) = dst.check_coord(self.cols) {
-            self.blit_(src, i, j);
-        }
-    }
-
-    pub fn blit_(&mut self, mat: &BasicMatrix, i0: u16, j0: u16) {
+    pub fn blit(&mut self, mat: &BasicMatrix, (i0, j0): (u16, u16)) {
         if mat.rows() == 0 {
             return;
         }
@@ -193,7 +172,7 @@ impl BasicMatrix {
         self.ensure_row(i);
         for (j, cell) in cells.into_iter().enumerate().take(self.cols as usize) {
             if cell {
-                self.set_(i, j as u16);
+                self.set((i, j as u16));
             }
         }
     }
@@ -214,35 +193,6 @@ impl std::fmt::Debug for BasicMatrix {
             }
         }
         f.write_str("|]")
-    }
-}
-
-pub trait Coord {
-    /// Check if this coordinate is bounded by the given number of columns. If so,
-    /// returns `Some((i, j))` such that this coordinate represents the `i`th row and
-    /// `j`th column.
-    fn check_coord(&self, cols: u16) -> Option<(u16, u16)>;
-}
-
-impl Coord for (u16, u16) {
-    fn check_coord(&self, cols: u16) -> Option<(u16, u16)> {
-        if self.1 < cols {
-            Some(*self)
-        } else {
-            None
-        }
-    }
-}
-
-impl Coord for (i16, i16) {
-    fn check_coord(&self, cols: u16) -> Option<(u16, u16)> {
-        if self.0 < 0 || self.1 < 0 {
-            None
-        } else if (self.1 as u16) < cols {
-            Some((self.0 as u16, self.1 as u16))
-        } else {
-            None
-        }
     }
 }
 
@@ -323,36 +273,31 @@ mod test {
     #[test]
     fn test_bm_get() {
         let m = basic_matrix![[true, false, false], [false, true, true],];
-        assert_eq!(m.get((0u16, 0u16)), true);
-        assert_eq!(m.get((0u16, 1u16)), false);
-        assert_eq!(m.get((0u16, 2u16)), false);
-        assert_eq!(m.get((1u16, 0u16)), false);
-        assert_eq!(m.get((1u16, 1u16)), true);
-        assert_eq!(m.get((1u16, 2u16)), true);
-        assert_eq!(m.get((-1i16, 0i16)), true);
-        assert_eq!(m.get((0i16, -1i16)), true);
-        assert_eq!(m.get((0i16, 3i16)), true);
-        assert_eq!(m.get((1i16, -1i16)), true);
-        assert_eq!(m.get((1u16, 3u16)), true);
-        assert_eq!(m.get((3i16, 0i16)), false);
-        assert_eq!(m.get((3u16, 0u16)), false);
-        assert_eq!(m.get((3i16, -1i16)), true);
+        assert_eq!(m.get((0, 0)), true);
+        assert_eq!(m.get((0, 1)), false);
+        assert_eq!(m.get((0, 2)), false);
+        assert_eq!(m.get((1, 0)), false);
+        assert_eq!(m.get((1, 1)), true);
+        assert_eq!(m.get((1, 2)), true);
+        assert_eq!(m.get((1, 3)), true);
+        assert_eq!(m.get((3, 0)), false);
+        assert_eq!(m.get((3, 4)), true);
     }
 
     #[test]
     fn test_bm_set() {
         let mut m = BasicMatrix::with_cols(5);
-        let c03 = (0u16, 3u16);
+        let c03 = (0, 3);
         assert_eq!(m.get(c03), false);
         m.set(c03);
         assert_eq!(m.get(c03), true);
         assert_eq!(m.rows(), 1);
-        let c31 = (3u16, 1u16);
+        let c31 = (3, 1);
         assert_eq!(m.get(c31), false);
         m.set(c31);
         assert_eq!(m.get(c31), true);
         assert_eq!(m.rows(), 4);
-        let c77 = (7u16, 7u16); // out of bounds
+        let c77 = (7, 7); // out of bounds
         assert_eq!(m.get(c77), true);
         m.set(c77);
         assert_eq!(m.rows(), 4);
@@ -361,10 +306,10 @@ mod test {
     #[test]
     fn test_bm_macro() {
         let mut m1 = BasicMatrix::with_cols(4);
-        m1.set((0u16, 0u16));
-        m1.set((0u16, 3u16));
-        m1.set((2u16, 2u16));
-        m1.set((2u16, 3u16));
+        m1.set((0, 0));
+        m1.set((0, 3));
+        m1.set((2, 2));
+        m1.set((2, 3));
         let m2 = basic_matrix![
             [true, false, false, true],
             [false, false, false, false],
@@ -396,9 +341,9 @@ mod test {
         );
         assert_eq!(heights(&m), vec![2, 2, 1, 1, 2]);
 
-        m.set((2u16, 3u16));
-        m.set((1u16, 2u16));
-        m.set((1u16, 3u16));
+        m.set((2, 3));
+        m.set((1, 2));
+        m.set((1, 3));
         assert_eq!(m.sift_rows(), 1);
         assert_eq!(
             m,
@@ -406,11 +351,11 @@ mod test {
         );
         assert_eq!(heights(&m), vec![1, 1, 1, 2, 0]);
 
-        m.set((0u16, 4u16));
-        m.set((1u16, 2u16));
-        m.set((1u16, 0u16));
-        m.set((1u16, 1u16));
-        m.set((1u16, 4u16));
+        m.set((0, 4));
+        m.set((1, 2));
+        m.set((1, 0));
+        m.set((1, 1));
+        m.set((1, 4));
         assert_eq!(m.sift_rows(), 2);
         assert_eq!(m.rows(), 0);
         assert_eq!(heights(&m), vec![0, 0, 0, 0, 0]);
@@ -422,7 +367,7 @@ mod test {
         let __ = false;
         let mut m = BasicMatrix::with_cols(6);
 
-        m.blit(&basic_matrix![[xx, __, xx], [__, xx, __],], (1u16, 2u16));
+        m.blit(&basic_matrix![[xx, __, xx], [__, xx, __],], (1, 2));
         assert_eq!(
             m,
             basic_matrix![
@@ -432,10 +377,7 @@ mod test {
             ]
         );
 
-        m.blit(
-            &basic_matrix![[xx, xx, xx, xx], [__, __, xx, __],],
-            (0u16, 3u16),
-        );
+        m.blit(&basic_matrix![[xx, xx, xx, xx], [__, __, xx, __],], (0, 3));
         assert_eq!(
             m,
             basic_matrix![
@@ -445,9 +387,9 @@ mod test {
             ]
         );
 
-        m.set((0u16, 0u16));
-        m.set((0u16, 1u16));
-        m.set((0u16, 2u16));
+        m.set((0, 0));
+        m.set((0, 1));
+        m.set((0, 2));
         assert_eq!(m.sift_rows(), 1);
     }
 

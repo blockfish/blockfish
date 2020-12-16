@@ -1,166 +1,220 @@
 use crate::{
-    ai::node::State,
-    shape::{NormalShapeId, ShapeTable},
-    BasicMatrix, Color, Input,
+    ai::State,
+    shape::{NormalizedShapeTransform, ShapeRef, ShapeTable, Transform},
+    BasicMatrix, Color, Input, Orientation,
 };
 use std::collections::{HashSet, VecDeque};
 
-/// Represents a placement of a particular shape.
+/// Represents a piece placement, with data about the shape as well as the input sequence
+/// to get it into place.
 #[derive(Clone)]
-pub struct Place {
-    pub norm_id: NormalShapeId,
-    pub coord: (u16, u16),
-    pub did_hold: bool,
-    pub mid_air: bool,
-    pub initial_col: u16,
-    pub final_inputs: Vec<Input>,
+pub struct Place<'s> {
+    /// The shape being placed.
+    shape: ShapeRef<'s>,
+    /// The final location / orientation for this placement.
+    tf: Transform,
+    /// List of inputs to move this piece from spawn to `tf`, including `Hold` in some
+    /// cases.
+    inputs: Vec<Input>,
+    /// Flag indicating that `inputs` actually moves this piece to a location in
+    /// mid-air, *above* the row indicated in `tf`. This will mean that the next input
+    /// needs to be preceeded by a sonic-drop.
+    mid_air: bool,
 }
 
-impl Place {
-    /// Create a new placement with shape given by `norm_id` and position `coord`.
-    pub fn new(norm_id: NormalShapeId, coord: (u16, u16)) -> Self {
-        let (_, initial_col) = coord;
-        Place {
-            norm_id,
-            coord,
-            did_hold: false,
-            mid_air: true,
-            initial_col,
-            final_inputs: vec![],
-        }
-    }
-
-    pub fn row(&self) -> u16 {
-        self.coord.0
-    }
-
-    pub fn col(&self) -> u16 {
-        self.coord.1
-    }
-
-    fn intersects(&self, stbl: &ShapeTable, mat: &BasicMatrix) -> bool {
-        let norm = &stbl[self.norm_id];
-        self.col() + norm.cols() > mat.cols() || norm.intersects(mat, self.coord)
-    }
-
-    fn fall(&mut self, stbl: &ShapeTable, mat: &BasicMatrix) {
-        let norm = &stbl[self.norm_id];
-        let (mut row, col) = self.coord;
-        while row > 0 && !norm.intersects(mat, (row - 1, col)) {
-            row -= 1;
-        }
-        self.mid_air = row < self.row();
-        self.coord = (row, col);
-    }
-
-    fn tap(&mut self, input: Input) {
-        let (_row, col) = &mut self.coord;
-        match input {
-            Input::Left => *col = col.saturating_sub(1),
-            Input::Right => *col += 1,
-            Input::SD => self.mid_air = false,
-            _ => panic!("invalid argument to Place::tap(): {:?}", input),
-        }
-        self.final_inputs.push(input);
-    }
-}
-
-impl std::fmt::Debug for Place {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?} at {:?}", self.norm_id, self.coord)
-    }
-}
-
-/// Data structure used to search for placements and aggregating the results.
-pub struct PlacementSearch<'s> {
-    stbl: &'s ShapeTable,
-    placements: Vec<Place>,
-    matrix: BasicMatrix,
-    bfs_queue: VecDeque<Place>,
-    discovered: HashSet<(u16, u16)>,
-}
-
-impl<'s> PlacementSearch<'s> {
-    /// Construct a new placement search using shape table `stbl`.
-    pub fn new(stbl: &'s ShapeTable) -> Self {
+impl<'s> Place<'s> {
+    /// Constructs a new `Place` from shape, transform. If `did_hold` is `true`, then adds
+    /// `Hold` to the input list before any other inputs.
+    pub fn new(shape: ShapeRef<'s>, tf: Transform, did_hold: bool) -> Self {
+        let (_i, j, r) = tf;
+        let inputs = if did_hold { Some(Input::Hold) } else { None };
+        let inputs = inputs.into_iter().chain(initial_inputs(shape, j, r));
         Self {
-            stbl,
-            placements: Vec::with_capacity(128),
-            matrix: BasicMatrix::with_cols(0),
-            discovered: HashSet::with_capacity(64),
-            bfs_queue: VecDeque::with_capacity(64),
+            tf,
+            shape,
+            inputs: inputs.collect(),
+            // any further inputs will automatically require sd
+            mid_air: true,
         }
     }
 
-    /// Returns the shape table held by this placement search.
-    pub fn shape_table(&self) -> &'s ShapeTable {
-        self.stbl
+    /// Returns a simplified view of this placement, as just a `(color, transform)` pair
+    /// (particularly, discarding the inputs list).
+    pub fn simple(&self) -> (Color, Transform) {
+        (self.shape.color(), self.tf)
     }
 
-    /// Returns an iterator over the placements previously computed.
-    pub fn placements<'a>(&'a self) -> impl Iterator<Item = &'a Place> {
-        self.placements.iter()
+    /// Returns a "normalized" view of this placement, only taking the final cells into
+    /// account, not the exact rotation state.
+    pub fn normal(&self) -> NormalizedShapeTransform {
+        self.shape.normalize(self.tf)
     }
 
-    /// Recomputes all possible next placements for `state`, which can be later accessed via
-    /// `self.placements()`.
-    pub fn compute(&mut self, state: &State) {
-        self.placements.clear();
-        self.set_matrix(state.matrix());
-        for (color, did_hold) in avail_colors(state) {
-            for norm_id in self.stbl.iter_norms_by_color(color) {
-                self.set_shape(norm_id, did_hold);
-                self.compute_shape();
+    /// Returns the input sequence for this placement.
+    pub fn into_inputs(self) -> Vec<Input> {
+        self.inputs
+    }
+
+    // accessor functions
+
+    pub fn did_hold(&self) -> bool {
+        self.inputs.get(0).cloned() == Some(Input::Hold)
+    }
+
+    pub fn shape(&self) -> ShapeRef<'s> {
+        self.shape
+    }
+
+    pub fn transform(&self) -> Transform {
+        self.tf
+    }
+
+    /// Simulates the input `inp` on this placement. If the input succeeds without being
+    /// blocked by matrix `mat`, then returns `Some(updated_input)`. If the input is
+    /// invalid, returns `None`.
+    fn input(&self, mat: &BasicMatrix, inp: Input) -> Option<Self> {
+        // get a list of potential offsets to try (particularly, from the kick table in
+        // case of rotation).
+        let (i0, j0, r0) = self.tf;
+        let (r, offsets): (Orientation, &[(i16, i16)]) = match inp {
+            Input::Left => (r0, &[(0, -1)]),
+            Input::Right => (r0, &[(0, 1)]),
+            Input::CCW => (r0.ccw(), self.shape.kicks(r0, r0.ccw())),
+            Input::CW => (r0.cw(), self.shape.kicks(r0, r0.cw())),
+            _ => panic!("invalid input to Shape::input(): {:?}", inp),
+        };
+
+        // run SRS algorithm: find the first valid offset if any.
+        let (i, j) = offsets
+            .iter()
+            .map(|&(i_off, j_off)| (i0 + i_off, j0 + j_off))
+            .find(|&(i, j)| !self.shape.intersects(mat, (i, j, r)))?;
+
+        // create copy and push new inputs
+        let mut copy = self.clone();
+        if self.mid_air {
+            copy.inputs.push(Input::SD);
+            copy.mid_air = false;
+        }
+        copy.inputs.push(inp);
+
+        // fall with gravity & update transform on copy
+        let mut i = i;
+        while !self.shape.intersects(mat, (i - 1, j, r)) {
+            i -= 1;
+            // since this piece falls with gravity, the next placement requires soft-drop
+            // pressed.
+            copy.mid_air = true;
+        }
+        copy.tf = (i, j, r);
+        Some(copy)
+    }
+}
+
+/// Iterator over placements as they are discovered on a matrix. This struct has a mutable
+/// interface so that the data structures can be reused for further placements.
+pub struct Placements<'s> {
+    shtb: &'s ShapeTable,
+    matrix: BasicMatrix,
+    // BFS queue
+    // TODO: to do finesse properly, we need to implement djikstra's via priority queue
+    //       sorting by inputs.len()
+    queue: VecDeque<Place<'s>>,
+    // prevent search cycles
+    places_seen: HashSet<(Color, Transform)>,
+    // prevent returning identical (normalized) shapes
+    normals_seen: HashSet<NormalizedShapeTransform>,
+}
+
+impl<'s> Placements<'s> {
+    /// Returns a new placements iterator using the given shape table.
+    ///
+    /// Initially this will produce no placements; needs to be fed an initial state with
+    /// `set_state`. Use `placements` function to automatically do this process.
+    pub fn new(shtb: &'s ShapeTable) -> Self {
+        Placements {
+            shtb,
+            matrix: BasicMatrix::with_cols(0),
+            queue: VecDeque::with_capacity(64),
+            places_seen: HashSet::with_capacity(64),
+            normals_seen: HashSet::with_capacity(32),
+        }
+    }
+
+    /// Reset this iterator to search for placements from the given node state, `st`.
+    pub fn set_state(&mut self, st: &State) {
+        self.matrix.clone_from(st.matrix());
+        self.places_seen.clear();
+        self.normals_seen.clear();
+        self.queue.clear();
+        for (color, did_hold) in available_colors(st) {
+            match self.shtb.shape(color) {
+                Some(shape) => self.push_basic_placements(shape, did_hold),
+                None => log::error!("color {:?} has no shape!", color),
             }
         }
     }
 
-    fn set_matrix(&mut self, mat: &BasicMatrix) {
-        self.matrix.clone_from(mat);
+    fn push_basic_placements(&mut self, shape: ShapeRef<'s>, did_hold: bool) {
+        for r in Orientation::iter_all() {
+            for j in shape.valid_cols(r, self.matrix.cols()) {
+                let i = shape.peak(&self.matrix, j, r);
+                self.queue.push_back(Place::new(shape, (i, j, r), did_hold));
+            }
+        }
     }
 
-    fn set_shape(&mut self, norm_id: NormalShapeId, did_hold: bool) {
-        let norm = &self.stbl[norm_id];
+    fn push_successors(&mut self, pl: &Place<'s>) {
         let matrix = &self.matrix;
-        let rightmost_col = matrix.cols() - norm.cols();
-        self.discovered.clear();
-        self.bfs_queue.clear();
-        self.bfs_queue.extend((0..=rightmost_col).map(|col| {
-            // use bottom-surface-of-shape + top-surface-of-matrix to quickly determine
-            // where it will land due to gravity.
-            let row = (0..norm.cols())
-                .map(|j| matrix.col_height(col + j).saturating_sub(norm.bottom(j)))
-                .max()
-                .expect("bug: 0 column shape");
-            let mut pm = Place::new(norm_id, (row, col));
-            pm.did_hold = did_hold;
-            pm
-        }));
+        self.queue.extend(
+            [Input::Left, Input::Right, Input::CW, Input::CCW]
+                .iter()
+                .flat_map(|&inp| pl.input(matrix, inp)),
+        );
     }
 
-    fn compute_shape(&mut self) {
-        while let Some(pm) = self.bfs_queue.pop_front() {
-            if self.discovered.contains(&pm.coord) || pm.intersects(self.stbl, &self.matrix) {
+    fn dequeue(&mut self) -> Option<Place<'s>> {
+        self.queue.pop_front()
+    }
+
+    /// Returns `true` if `pl` has already been visited, otherwise marks it as visited.
+    fn is_cycle(&mut self, pl: &Place) -> bool {
+        !self.places_seen.insert(pl.simple())
+    }
+
+    /// Returns `true` if `pl` has already been yielded from the iterator, otherwise marks
+    /// it as a repeat.
+    fn is_repeat(&mut self, pl: &Place) -> bool {
+        !self.normals_seen.insert(pl.normal())
+    }
+}
+
+impl<'s> Iterator for Placements<'s> {
+    type Item = Place<'s>;
+    fn next(&mut self) -> Option<Place<'s>> {
+        loop {
+            let node = self.dequeue()?;
+            if self.is_cycle(&node) {
                 continue;
             }
-
-            for &input in &[Input::Left, Input::Right] {
-                let mut pm = pm.clone();
-                if pm.mid_air {
-                    pm.tap(Input::SD);
-                }
-                pm.tap(input);
-                pm.fall(self.stbl, &self.matrix);
-                self.bfs_queue.push_back(pm);
+            self.push_successors(&node);
+            if !self.is_repeat(&node) {
+                return Some(node);
             }
-
-            self.discovered.insert(pm.coord);
-            self.placements.push(pm);
         }
     }
 }
 
-fn avail_colors(state: &State) -> impl Iterator<Item = (Color, bool)> {
+/// Returns a `Placements` iterator already "primed" with node state `st`.
+pub fn placements<'s>(shtb: &'s ShapeTable, st: &State) -> Placements<'s> {
+    let mut places = Placements::new(shtb);
+    places.set_state(st);
+    places
+}
+
+/// Returns `(color, hold)` for the next shape colors available for `state`, where `hold`
+/// is `true` if the it requires hold key to use.
+fn available_colors(state: &State) -> impl Iterator<Item = (Color, bool)> {
     let (col_nh, mut col_h) = state.next();
     if col_nh == col_h {
         // don't use hold if identical to current piece
@@ -171,26 +225,38 @@ fn avail_colors(state: &State) -> impl Iterator<Item = (Color, bool)> {
     nh.chain(h)
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////
+fn initial_inputs<'a>(shape: ShapeRef<'a>, j: i16, r: Orientation) -> impl Iterator<Item = Input> {
+    let h = j - shape.spawn_col();
+    let h_input = if h < 0 { Input::Left } else { Input::Right };
+    let h_inputs = std::iter::repeat(h_input).take(h.abs() as usize);
+    let r_inputs = match r {
+        Orientation::R0 => &[] as &[_],
+        Orientation::R1 => &[Input::CW],
+        Orientation::R2 => &[Input::CW, Input::CW],
+        Orientation::R3 => &[Input::CCW],
+    }
+    .iter()
+    .cloned();
+    r_inputs.chain(h_inputs)
+}
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{basic_matrix, shape::srs, Color, Snapshot};
-
-    fn colors(hold: char, queue: &str) -> Vec<(char, bool)> {
-        let snapshot = Snapshot {
-            hold: std::convert::TryFrom::try_from(hold).ok(),
-            queue: queue.chars().map(Color).collect(),
-            matrix: BasicMatrix::with_cols(1),
-        };
-        avail_colors(&snapshot.into())
-            .map(|(c, h)| (c.0, h))
-            .collect()
-    }
+    use crate::{basic_matrix, shape::srs, Color, Input::*, Orientation::*, Snapshot};
 
     #[test]
-    fn test_avail_colors() {
+    fn test_available_colors() {
+        fn colors(hold: char, queue: &str) -> Vec<(char, bool)> {
+            let snapshot = Snapshot {
+                hold: std::convert::TryFrom::try_from(hold).ok(),
+                queue: queue.chars().map(Color).collect(),
+                matrix: BasicMatrix::with_cols(1),
+            };
+            available_colors(&snapshot.into())
+                .map(|(c, h)| (c.0, h))
+                .collect()
+        }
         assert_eq!(colors('.', "TJZ"), [('T', false), ('J', true)]);
         assert_eq!(colors('I', "TJZ"), [('T', false), ('I', true)]);
         assert_eq!(colors('I', "IJZ"), [('I', false)]);
@@ -200,298 +266,381 @@ mod test {
     }
 
     #[test]
-    fn test_sonic_drop() {
-        // . x x . .
-        // . x x x x
-        let mat = basic_matrix![
-            [false, true, true, true, true],
-            [false, true, true, false, false]
-        ];
-        let srs = srs();
-
-        let mut ps = PlacementSearch::new(&srs);
-        ps.set_matrix(&mat);
-        let mut sonic_drop = |norm_id, col| {
-            ps.set_shape(norm_id, false);
-            ps.bfs_queue
-                .iter()
-                .find(|pm| pm.col() == col)
-                .expect("did not drop to requested column")
-                .row()
+    fn test_inputs() {
+        let snapshot = Snapshot {
+            queue: vec![Color('I')],
+            hold: Some(Color('J')),
+            matrix: BasicMatrix::with_cols(10),
         };
-
-        let i0 = srs.iter_norms_by_color(Color('I')).nth(0).unwrap();
-        let i1 = srs.iter_norms_by_color(Color('I')).nth(1).unwrap();
-        assert_eq!(sonic_drop(i0, 0), 2);
-        assert_eq!(sonic_drop(i1, 0), 0);
-        assert_eq!(sonic_drop(i1, 1), 2);
-
-        let z0 = srs.iter_norms_by_color(Color('Z')).nth(0).unwrap();
-        let z1 = srs.iter_norms_by_color(Color('Z')).nth(1).unwrap();
-        assert_eq!(sonic_drop(z0, 2), 1);
-        assert_eq!(sonic_drop(z0, 1), 2);
-        assert_eq!(sonic_drop(z1, 0), 1);
-        assert_eq!(sonic_drop(z1, 1), 2);
-        assert_eq!(sonic_drop(z1, 2), 2);
-        assert_eq!(sonic_drop(z1, 3), 1);
-
-        let s1 = srs.iter_norms_by_color(Color('S')).nth(1).unwrap();
-        assert_eq!(sonic_drop(s1, 0), 2);
-
-        let l1 = srs.iter_norms_by_color(Color('L')).nth(1).unwrap();
-        let l2 = srs.iter_norms_by_color(Color('L')).nth(2).unwrap();
-        assert_eq!(sonic_drop(l1, 1), 2);
-        assert_eq!(sonic_drop(l2, 0), 1);
-        assert_eq!(sonic_drop(l2, 2), 2);
-    }
-
-    fn coords(s: &mut PlacementSearch, norm_id: NormalShapeId) -> Vec<(u16, u16)> {
-        s.placements.clear();
-        s.set_shape(norm_id, false);
-        s.compute_shape();
-        let mut coords: Vec<_> = s.placements.iter().map(|pm| pm.coord).collect();
-        coords.sort();
-        coords
-    }
-
-    fn inputs(p: &Place) -> Vec<Input> {
-        let srs = srs();
-        crate::ai::finesse::inputs(&srs, p).collect()
-    }
-
-    #[test]
-    fn test_basic_placements() {
-        let (xx, __) = (true, false);
-        let srs = srs();
-        let t0 = srs.iter_norms_by_color(Color('T')).nth(0).unwrap();
-        let t2 = srs.iter_norms_by_color(Color('T')).nth(2).unwrap();
-        let i0 = srs.iter_norms_by_color(Color('I')).nth(0).unwrap();
-        let i1 = srs.iter_norms_by_color(Color('I')).nth(1).unwrap();
-        let s1 = srs.iter_norms_by_color(Color('S')).nth(1).unwrap();
-        let mut s = PlacementSearch::new(&srs);
-        // . . . . . x
-        // . . . . . x
-        // . . . x . x
-        s.set_matrix(&basic_matrix![
-            [__, __, __, xx, __, xx],
-            [__, __, __, __, __, xx],
-            [__, __, __, __, __, xx],
-        ]);
-        assert_eq!(coords(&mut s, t0), [(0, 0), (1, 1), (1, 2), (3, 3)]);
-        assert_eq!(coords(&mut s, t2), [(0, 0), (0, 1), (1, 2), (2, 3)]);
-        assert_eq!(coords(&mut s, i0), [(1, 0), (1, 1), (3, 2)]);
-        assert_eq!(
-            coords(&mut s, i1),
-            [(0, 0), (0, 1), (0, 2), (0, 4), (1, 3), (3, 5)]
-        );
-        assert_eq!(coords(&mut s, s1), [(0, 0), (0, 1), (0, 3), (1, 2), (3, 4)]);
-    }
-
-    #[test]
-    fn test_basic_placements_w_hold() {
-        let (xx, __) = (true, false);
-        let srs = srs();
-        let t0 = srs.iter_norms_by_color(Color('T')).nth(0).unwrap();
-        let t1 = srs.iter_norms_by_color(Color('T')).nth(1).unwrap();
-        let t2 = srs.iter_norms_by_color(Color('T')).nth(2).unwrap();
-        let t3 = srs.iter_norms_by_color(Color('T')).nth(3).unwrap();
-        let o = srs.iter_norms_by_color(Color('O')).nth(0).unwrap();
-        let mut s = PlacementSearch::new(&srs);
-
-        s.compute(
-            &Snapshot {
-                matrix: basic_matrix![[__, __, xx]],
-                queue: vec![Color('T')],
-                hold: Some(Color('O')),
+        for pl in placements(&srs(), &snapshot.into()) {
+            match pl.simple() {
+                (Color('I'), (-2, 0, R0)) => assert_eq!(pl.inputs, [Left, Left, Left]),
+                (Color('I'), (-2, 6, R0)) => assert_eq!(pl.inputs, [Right, Right, Right]),
+                (Color('I'), (0, 4, R1)) => assert_eq!(pl.inputs, [CW, Right]),
+                (Color('J'), (-1, 2, R3)) => assert_eq!(pl.inputs, [Hold, CCW, Left]),
+                _ => {}
             }
-            .into(),
-        );
+        }
+    }
 
-        let mut places: Vec<_> = s
-            .placements()
-            .map(|pm| (pm.norm_id, pm.row(), pm.col(), pm.did_hold))
+    #[test]
+    fn test_overlapping_placements() {
+        let snapshot = Snapshot {
+            queue: vec![Color('O')],
+            hold: Some(Color('S')),
+            matrix: BasicMatrix::with_cols(10),
+        };
+        let mut places: Vec<_> = placements(&srs(), &snapshot.into())
+            .map(|pl| {
+                let (Color(c), (i, j, r)) = pl.simple();
+                (c, r, i, j)
+            })
             .collect();
         places.sort();
         assert_eq!(
             places,
             [
-                (o, 0, 0, true),
-                (o, 1, 1, true),
-                (t0, 1, 0, false),
-                (t1, 0, 0, false),
-                (t1, 0, 1, false),
-                (t2, 0, 0, false),
-                (t3, 0, 0, false),
-                (t3, 1, 1, false),
+                ('O', R0, -1, -1),
+                ('O', R0, -1, 0),
+                ('O', R0, -1, 1),
+                ('O', R0, -1, 2),
+                ('O', R0, -1, 3),
+                ('O', R0, -1, 4),
+                ('O', R0, -1, 5),
+                ('O', R0, -1, 6),
+                ('O', R0, -1, 7),
+                ('S', R0, -1, 0),
+                ('S', R0, -1, 1),
+                ('S', R0, -1, 2),
+                ('S', R0, -1, 3),
+                ('S', R0, -1, 4),
+                ('S', R0, -1, 5),
+                ('S', R0, -1, 6),
+                ('S', R0, -1, 7),
+                ('S', R1, 0, -1),
+                ('S', R1, 0, 0),
+                ('S', R1, 0, 1),
+                ('S', R1, 0, 2),
+                ('S', R1, 0, 3),
+                ('S', R1, 0, 4),
+                ('S', R1, 0, 5),
+                ('S', R1, 0, 6),
+                ('S', R1, 0, 7),
             ]
         );
+    }
+
+    #[test]
+    fn test_placements_w_hold() {
+        let (xx, __) = (true, false);
+        let snapshot = Snapshot {
+            matrix: basic_matrix![[__, __, xx]],
+            queue: vec![Color('T')],
+            hold: Some(Color('L')),
+        };
+
+        let mut places: Vec<_> = placements(&srs(), &snapshot.into())
+            .map(|pl| {
+                let (Color(c), (i, j, r)) = pl.simple();
+                (c, r, i, j, pl.did_hold())
+            })
+            .collect();
+        places.sort();
+        assert_eq!(
+            places,
+            [
+                ('L', R0, 0, 0, true),
+                ('L', R1, 0, -1, true),
+                ('L', R1, 1, 0, true),
+                ('L', R2, 0, 0, true),
+                ('L', R3, 0, 0, true),
+                ('L', R3, 1, 1, true),
+                ('T', R0, 0, 0, false),
+                ('T', R1, 0, -1, false),
+                ('T', R1, 0, 0, false),
+                ('T', R2, 0, 0, false),
+                ('T', R3, 0, 0, false),
+                ('T', R3, 1, 1, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_place_input() {
+        let srs = srs();
+        let (xx, __) = (true, false);
+        //         T
+        //       T T T
+        // . . . . . x
+        // . . . . . x
+        // . . . x . x
+        let mat = basic_matrix![
+            [__, __, __, xx, __, xx],
+            [__, __, __, __, __, xx],
+            [__, __, __, __, __, xx],
+        ];
+        let t = srs.shape(Color('T')).unwrap();
+        let pl = Place::new(t, (2, 3, R0), false);
+
+        assert_eq!(pl.inputs, []);
+        // right movement fails
+        assert!(pl.input(&mat, Right).is_none());
+        // left movement succeeds
+        let pl = pl.input(&mat, Left).unwrap();
+        assert_eq!(pl.tf, (0, 2, R0));
+        assert_eq!(pl.inputs, [SD, Left]);
+        // 2nd left movement succeeds
+        let pl = pl.input(&mat, Left).unwrap();
+        assert_eq!(pl.tf, (0, 1, R0));
+        assert_eq!(pl.inputs, [SD, Left, SD, Left]);
+        // 3rd left movement succeeds
+        let pl = pl.input(&mat, Left).unwrap();
+        assert_eq!(pl.tf, (-1, 0, R0));
+        assert_eq!(pl.inputs, [SD, Left, SD, Left, /* no SD */ Left]);
+        // 4th left movement fails
+        assert!(pl.input(&mat, Left).is_none());
+    }
+
+    fn all_places(
+        matrix: BasicMatrix,
+        (color_char, r): (char, Orientation),
+    ) -> Vec<(i16, i16, Vec<Input>)> {
+        let snapshot = Snapshot {
+            hold: None,
+            queue: vec![Color(color_char)],
+            matrix,
+        };
+        let mut places: Vec<_> = placements(&srs(), &snapshot.into())
+            .filter(|pl| pl.tf.2 == r)
+            .map(|pl| (pl.tf.0, pl.tf.1, pl.inputs))
+            .collect();
+        places.sort();
+        places
     }
 
     #[test]
     fn test_tuck_easy() {
-        use Input::*;
         let (xx, __) = (true, false);
-        let srs = srs();
-        let t0 = srs.iter_norms_by_color(Color('T')).nth(0).unwrap();
-        let l0 = srs.iter_norms_by_color(Color('L')).nth(0).unwrap();
-
-        let mut s = PlacementSearch::new(&srs);
-        s.set_matrix(&basic_matrix![[__, __, __, __, __], [xx, __, __, __, __],]);
         assert_eq!(
-            coords(&mut s, t0),
+            all_places(
+                basic_matrix![[__, __, __, __, __], [xx, __, __, __, __]],
+                ('T', R0)
+            ),
             [
                 // x . . . .      x T . . .
                 // . . . . .  ->  T T T . .
-                //                  (0,0)
-                (0, 0),
-                (0, 1),
-                (0, 2),
-                (2, 0),
+                //                  (-1,0)
+                // NOTE: it only finds this optimal input sequence because of some subtle
+                //       implementation details. finesse is NOT optimized in general!
+                (-1, 0, vec![Left, Left, SD, Left]),
+                (-1, 1, vec![Left, Left]),
+                (-1, 2, vec![Left]),
+                (1, 0, vec![Left, Left, Left]),
             ]
         );
 
-        let pm = s.placements().find(|pm| pm.coord == (0, 1)).unwrap();
-        assert_eq!(inputs(pm), [Left, Left]);
-
-        let pm = s.placements().find(|pm| pm.coord == (0, 0)).unwrap();
-        assert_eq!(inputs(pm), [Left, Left, SD, Left]);
-
-        s.set_matrix(&basic_matrix![
-            [__, __, __, __, __],
-            [__, __, __, xx, __],
-            [__, __, __, xx, __],
-        ]);
         assert_eq!(
-            coords(&mut s, t0),
+            all_places(
+                basic_matrix![
+                    [__, __, __, __, __],
+                    [__, __, __, xx, __],
+                    [__, __, __, xx, __],
+                ],
+                ('T', R0)
+            ),
             [
-                (0, 0),
                 // . . . x .      . . . x .
                 // . . . x .      . . T x .
                 // . . . . .  ->  . T T T .
-                //                  (0,1)
-                (0, 1),
-                (3, 1),
-                (3, 2),
+                //                  (-1,1)
+                (-1, 0, vec![Left, Left, Left]),
+                // same as "NOTE" above
+                (-1, 1, vec![Left, Left, Left, SD, Right]),
+                (2, 1, vec![Left, Left]),
+                (2, 2, vec![Left]),
             ]
         );
-        let pm = s.placements().find(|pm| pm.coord == (0, 1)).unwrap();
-        assert_eq!(inputs(pm), [Left, Left, Left, SD, Right]);
-
-        // no tuck
-        assert_eq!(coords(&mut s, l0), [(0, 0), (3, 1), (3, 2)]);
-    }
-
-    #[test]
-    fn test_tuck_2_taps() {
-        use Input::*;
-        let (xx, __) = (true, false);
-        let srs = srs();
-        let l0 = srs.iter_norms_by_color(Color('L')).nth(0).unwrap();
-
-        let mut s = PlacementSearch::new(&srs);
-        s.set_matrix(&basic_matrix![[__, __, __, __, __], [xx, xx, __, __, __],]);
-        assert_eq!(
-            coords(&mut s, l0),
-            [
-                // x x . . .      x x . L .      x x L . .
-                // . . . . .  ->  . L L L .  ->  L L L . .
-                //                  (0,1)          (0,0)
-                (0, 0),
-                (0, 1),
-                (0, 2),
-                (2, 0),
-                (2, 1),
-            ]
-        );
-
-        let pm = s.placements().find(|pm| pm.coord == (0, 1)).unwrap();
-        assert_eq!(inputs(pm), [Left, SD, Left]);
-        let pm = s.placements().find(|pm| pm.coord == (0, 0)).unwrap();
-        assert_eq!(inputs(pm), [Left, SD, Left, Left]);
     }
 
     #[test]
     fn test_tuck_double_sd() {
-        use Input::*;
         let (xx, __) = (true, false);
-        let srs = srs();
-        let o = srs.iter_norms_by_color(Color('O')).nth(0).unwrap();
-
-        let mut s = PlacementSearch::new(&srs);
-        s.set_matrix(&basic_matrix![
-            [__, __, __, xx, __],
-            [__, __, __, xx, xx],
-            [__, __, __, __, __],
-            [__, __, __, __, __],
-            [xx, xx, xx, __, __],
-        ]);
         assert_eq!(
-            coords(&mut s, o),
+            all_places(
+                basic_matrix![
+                    [__, __, __, xx, __],
+                    [__, __, __, xx, xx],
+                    [__, __, __, __, __],
+                    [__, __, __, __, __],
+                    [xx, xx, xx, __, __],
+                ],
+                ('O', R0)
+            ),
             [
                 // x x x . .      x x x . .      x x x . .      x x x . .
                 // . . . . .      . . O O .      . . . . .      . . . . .
                 // . . . . .  ->  . . O O .  ->  . . . . .  ->  . . . . .
                 // . . . x x      . . . x x      . O O x x      O O . x x
                 // . . . x .      . . . x .      . O O x .      O O . x .
-                //                  (2,2)          (0,1)          (0,0)
+                //                  (1,1)          (-1,0)         (-1,-1)
                 //                SD,L           SD,L,L         SD,L,L,SD,L
-                (0, 0),
-                (0, 1),
-                (2, 2),
-                (2, 3),
-                (5, 0),
-                (5, 1),
-                (5, 2),
+                (-1, -1, vec![Left, SD, Left, Left, SD, Left]),
+                (-1, 0, vec![Left, SD, Left, Left]),
+                (1, 1, vec![Left, SD, Left]),
+                (1, 2, vec![Left]),
+                (4, -1, vec![Left, Left, Left, Left]),
+                (4, 0, vec![Left, Left, Left]),
+                (4, 1, vec![Left, Left]),
             ]
         );
-
-        let pm = s.placements().find(|pm| pm.coord == (2, 2)).unwrap();
-        assert_eq!(inputs(pm), [Left, SD, Left]);
-        let pm = s.placements().find(|pm| pm.coord == (0, 1)).unwrap();
-        assert_eq!(inputs(pm), [Left, SD, Left, Left]);
-        let pm = s.placements().find(|pm| pm.coord == (0, 0)).unwrap();
-        assert_eq!(inputs(pm), [Left, SD, Left, Left, SD, Left]);
     }
 
     #[test]
     fn test_tuck_ambiguous() {
-        use Input::*;
         let (xx, __) = (true, false);
-        let srs = srs();
-        let o = srs.iter_norms_by_color(Color('O')).nth(0).unwrap();
-
-        let mut s = PlacementSearch::new(&srs);
-        s.set_matrix(&basic_matrix![
-            [__, __, __, __, __],
-            [__, __, __, __, __],
-            [__, __, xx, __, __],
-        ]);
         assert_eq!(
-            coords(&mut s, o),
+            all_places(
+                basic_matrix![
+                    [__, __, __, __, __],
+                    [__, __, __, __, __],
+                    [__, __, xx, __, __],
+                ],
+                ('O', R0)
+            ),
             [
                 // . . x . .      . . x . .      . . x . .
                 // . . . . .  ->  . O O . .  ->  . . O O .
                 // . . . . .      . O O . .      . . O O .
-                //                  (0,1)          (0,2)
+                //                  (-1,0)         (-1,1)
                 //                SD,R           SD,R,R
                 //                SD,L,L         SD,L
-                (0, 0),
-                (0, 1),
-                (0, 2),
-                (0, 3),
-                (3, 1),
-                (3, 2),
+                (-1, -1, vec![Left, Left, Left, Left]),
+                (-1, 0, vec![Left, Left, Left, Left, SD, Right]),
+                (-1, 1, vec![Left, SD, Left]),
+                (-1, 2, vec![Left]),
+                (2, 0, vec![Left, Left, Left]),
+                (2, 1, vec![Left, Left]),
             ]
         );
+        // NOTE: these input sequences are biased by implementation details of the
+        //       algorithm, and not necessarily emblematic of correct finesse.
+    }
 
-        // TODO: use BFS so we get to the placement with least number of taps first;
-        // however we aren't taking into account the number of finesse moves to get to
-        // 'initial_col'.
+    #[test]
+    fn test_tspeen() {
+        let (xx, __) = (true, false);
+        assert_eq!(
+            all_places(
+                // x . . .
+                // . . . x
+                // x . x x
+                basic_matrix![[xx, __, xx, xx], [__, __, __, xx], [xx, __, __, __],],
+                ('T', R2)
+            ),
+            [
+                (0, 0, vec![CW, Left, Left, Left, SD, CW]),
+                (1, 1, vec![CW, CW, Left, Left]),
+                (2, 0, vec![CW, CW, Left, Left, Left]),
+            ]
+        );
+    }
 
-        let pm = s.placements().find(|pm| pm.coord == (0, 1)).unwrap();
-        assert_eq!(inputs(pm), [Left, Left, Left, Left, SD, Right]);
+    #[test]
+    fn test_lspeen() {
+        let (xx, __) = (true, false);
+        assert_eq!(
+            all_places(
+                basic_matrix![[__, __, __, __, __], [xx, xx, __, xx, xx]],
+                ('L', R0)
+            ),
+            [
+                // . . . . .      . L L . .      . . . . .
+                // x x . x x      x x L x x      x x L x x
+                // . . . . .  ->  . . L . .  ->  L L L . .
+                //                                 (-1,0)
+                (-1, 0, vec![CCW, Left, Left, SD, CW]),
+                (1, 0, vec![Left, Left, Left]),
+                (1, 1, vec![Left, Left]),
+                (1, 2, vec![Left]),
+            ]
+        );
+    }
 
-        let pm = s.placements().find(|pm| pm.coord == (0, 2)).unwrap();
-        assert_eq!(inputs(pm), [Left, SD, Left]);
+    #[test]
+    fn test_s_spin_triple() {
+        let (xx, __) = (true, false);
+        assert_eq!(
+            all_places(
+                basic_matrix![
+                    [xx, xx, __, xx],
+                    [xx, __, __, xx],
+                    [xx, __, xx, xx],
+                    [__, __, __, __],
+                    [xx, __, __, __],
+                ],
+                ('S', R1)
+            ),
+            [
+                // x . . .
+                // . . . .
+                // x . x x
+                // x . . x
+                // x x . x
+                (0, 0, vec![Left, Left, SD, Left, CW]),
+                (3, 0, vec![CW, Left, Left, Left]),
+                (3, 1, vec![CW, Left, Left]),
+                (4, -1, vec![CW, Left, Left, Left, Left]),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_s_spin_triple_overhangless() {
+        let (xx, __) = (true, false);
+        assert_eq!(
+            all_places(
+                basic_matrix![
+                    [xx, xx, __, xx],
+                    [xx, __, __, xx],
+                    [xx, __, xx, xx],
+                    [__, __, __, xx],
+                ],
+                ('S', R3)
+            ),
+            [
+                // . . . .
+                // . . . x
+                // x . x x
+                // x . . x
+                // x x . x
+                (0, 1, vec![Left, Left, SD, CCW]),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_pierce() {
+        let (xx, __) = (true, false);
+        assert_eq!(
+            all_places(
+                basic_matrix![
+                    [xx, xx, __, xx, xx, xx],
+                    [xx, __, __, __, __, xx],
+                    [__, __, __, __, __, __],
+                    [__, __, __, xx, __, __],
+                ],
+                ('I', R0)
+            ),
+            [
+                // . . . x . .   . . I x . .   . . . x . .
+                // . . . . . .   . . I . . .   . . . . . .
+                // x . . . . x   x . I . . x   x I I I I x
+                // x x . x x x   x x I x x x   x x . x x x
+                (0, 0, vec![CW, Left, Left, Left, SD, CCW]), // ??
+                (2, 0, vec![Left, Left, Left]),
+                (2, 1, vec![Left, Left]),
+                (2, 2, vec![Left]),
+            ]
+        );
     }
 }

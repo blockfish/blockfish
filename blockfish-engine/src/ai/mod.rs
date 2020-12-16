@@ -1,5 +1,4 @@
 mod a_star;
-mod finesse;
 mod node;
 mod place;
 mod score;
@@ -9,9 +8,9 @@ mod score;
 mod dfs;
 
 use self::{
-    a_star::{a_star, AStar},
+    a_star::AStar,
     node::{Node, State},
-    place::{Place, PlacementSearch},
+    place::placements,
 };
 use crate::{
     shape::{srs, ShapeTable},
@@ -59,7 +58,7 @@ pub struct Suggestion {
 /// state.
 pub struct AI {
     cfg: Config,
-    stbl: Arc<ShapeTable>,
+    shtb: Arc<ShapeTable>,
     rx: Option<mpsc::Receiver<Suggestion>>,
 }
 
@@ -80,7 +79,7 @@ impl AI {
     pub fn new(cfg: Config) -> Self {
         AI {
             cfg,
-            stbl: Arc::new(srs()),
+            shtb: Arc::new(srs()),
             rx: None,
         }
     }
@@ -90,20 +89,16 @@ impl AI {
     pub fn start(&mut self, snapshot: Snapshot) {
         self.rx = None;
         let cfg = self.cfg.clone();
-        let stbl = self.stbl.clone();
+        let shtb = self.shtb.clone();
 
         let (tx, rx) = mpsc::sync_channel(100);
         std::thread::spawn(move || {
-            let mut place_search = PlacementSearch::new(&stbl);
             let init_state = snapshot.into();
-            place_search.compute(&init_state);
-
-            let mut roots = place_search
-                .placements()
-                .map(|place| Root::new(finesse::inputs(&stbl, place)))
+            let mut roots = placements(&shtb, &init_state)
+                .map(|place| Root::new(place.into_inputs()))
                 .collect::<Vec<_>>();
 
-            let mut worker = Worker::new(place_search, &cfg.scoring, cfg.search_limit, init_state);
+            let mut worker = Worker::new(&shtb, &cfg.scoring, cfg.search_limit, init_state);
             let mut iterations = 0;
             while let Some((root_idx, depth, score)) = worker.step() {
                 iterations += 1;
@@ -173,15 +168,13 @@ struct Worker<'s> {
 
 impl<'s> Worker<'s> {
     fn new(
-        place_search: PlacementSearch<'s>,
+        shape_table: &'s ShapeTable,
         scoring: &'s ScoreParams,
         node_limit: usize,
         state0: State,
     ) -> Self {
-        Self {
-            node_limit,
-            search: a_star(place_search, scoring, vec![Node::new(state0)]),
-        }
+        let search = AStar::new(shape_table, scoring, node_limit, Node::new(state0));
+        Self { search, node_limit }
     }
 
     fn step(&mut self) -> Option<(usize, usize, i64)> {

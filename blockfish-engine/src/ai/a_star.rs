@@ -1,27 +1,31 @@
-use super::{place::PlacementSearch, Node, ScoreParams};
+use super::{node::Node, place::Placements, score::ScoreParams};
+use crate::shape::ShapeTable;
+
 use std::collections::BinaryHeap;
 
 pub(super) struct AStar<'s> {
     nodes: BinaryHeap<AStarNode>,
-    place_search: PlacementSearch<'s>,
+    placements: Placements<'s>,
     scoring: &'s ScoreParams,
-}
-
-pub(super) fn a_star<'s>(
-    place_search: PlacementSearch<'s>,
-    scoring: &'s ScoreParams,
-    initial_nodes: Vec<Node>,
-) -> AStar<'s> {
-    let mut nodes = BinaryHeap::with_capacity(1000);
-    nodes.extend(initial_nodes.into_iter().map(AStarNode));
-    AStar {
-        nodes,
-        place_search,
-        scoring,
-    }
 }
 
 impl<'s> AStar<'s> {
+    pub fn new(
+        shape_table: &'s ShapeTable,
+        scoring: &'s ScoreParams,
+        capacity: usize,
+        initial_node: Node,
+    ) -> Self {
+        let mut nodes = BinaryHeap::with_capacity(capacity);
+        nodes.push(AStarNode(initial_node));
+        let placements = Placements::new(shape_table);
+        Self {
+            nodes,
+            placements,
+            scoring,
+        }
+    }
+
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
@@ -31,9 +35,12 @@ impl<'s> Iterator for AStar<'s> {
     type Item = Node;
     fn next(&mut self) -> Option<Node> {
         let node = self.nodes.pop()?.0;
-        self.place_search.compute(node.state());
-        let succ = node.successors(&self.place_search, self.scoring);
-        self.nodes.extend(succ.map(AStarNode));
+        let scoring = self.scoring;
+        self.placements.set_state(node.state());
+        for (idx, place) in (&mut self.placements).enumerate() {
+            let succ = node.successor(scoring, idx, &place);
+            self.nodes.push(AStarNode(succ));
+        }
         Some(node)
     }
 }
