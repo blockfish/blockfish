@@ -31,7 +31,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            search_limit: 25_000,
+            search_limit: 50_000,
             scoring: ScoreParams::default(),
         }
     }
