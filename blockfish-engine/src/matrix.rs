@@ -137,6 +137,11 @@ impl BasicMatrix {
         full_cnt
     }
 
+    pub fn remove_rows(&mut self, range: Range<u16>) {
+        let Range { start, end } = range;
+        std::mem::drop(self.data.drain(start as usize..end as usize));
+    }
+
     /// Returns the height of column `j`, counting only occupied cells.
     pub fn col_height(&self, j: u16) -> u16 {
         (0..self.rows())
@@ -175,6 +180,11 @@ impl BasicMatrix {
                 self.set((i, j as u16));
             }
         }
+    }
+
+    /// Inserts an empty row to the bottom of the matrix.
+    pub fn insert_empty_bottom_row(&mut self) {
+        self.data.insert(0, empty_row_bits(self.cols));
     }
 }
 
@@ -454,5 +464,38 @@ mod test {
         assert!(!mat.overlaps(&mat2, (0, 6)));
         assert!(mat.overlaps(&mat2, (0, 7)));
         assert!(mat.overlaps(&mat2, (0, 8)));
+    }
+
+    #[test]
+    fn test_remove_rows() {
+        let (xx, __) = (true, false);
+        let mut mat = basic_matrix![
+            [xx, xx, xx, __],
+            [xx, __, __, __],
+            [xx, xx, __, __],
+            [__, xx, xx, __],
+            [__, xx, xx, xx],
+        ];
+        mat.remove_rows(1..3);
+        assert_eq!(
+            mat,
+            basic_matrix![[xx, xx, xx, __], [__, xx, xx, __], [__, xx, xx, xx]]
+        );
+    }
+
+    #[test]
+    fn test_insert_empty_bottom_row() {
+        let (xx, __) = (true, false);
+        let mut mat = basic_matrix![[xx, xx, xx, __], [xx, __, __, __], [xx, xx, __, __],];
+        mat.insert_empty_bottom_row();
+        assert_eq!(
+            mat,
+            basic_matrix![
+                [__, __, __, __],
+                [xx, xx, xx, __],
+                [xx, __, __, __],
+                [xx, xx, __, __],
+            ]
+        );
     }
 }

@@ -1,7 +1,7 @@
 [package]
 name = "blockfish"
 version = "0.1.0"
-authors = ["iitalics <iitalics@gmail.com>"]
+authors = ["iitalics <iitalics@gmail.com>", "mystery <mystery#3553>"]
 edition = "2018"
 
 [[bin]]

@@ -7,16 +7,16 @@ use std::ops::Range;
 #[derive(Clone, Debug)]
 pub struct ScoreParams {
     pub row_factor: i64,
-    pub nspace_factor: i64,
+    pub piece_estimate_factor: i64,
     pub piece_penalty: i64,
 }
 
 impl Default for ScoreParams {
     fn default() -> Self {
         Self {
-            row_factor: 50,
-            nspace_factor: 10,
-            piece_penalty: 30,
+            row_factor: 0,
+            piece_estimate_factor: 3,
+            piece_penalty: 4,
         }
     }
 }
@@ -25,9 +25,26 @@ impl Default for ScoreParams {
 ///
 /// Note: used by A* to compute "h" value (remaining cost heuristic).
 pub fn score(params: &ScoreParams, matrix: &BasicMatrix) -> i64 {
-    let rs = (matrix.rows() as i64) * params.row_factor;
-    let nss = negative_space_score(&matrix) * params.nspace_factor;
-    rs + nss
+    let mut matrix = matrix.clone();
+    matrix.insert_empty_bottom_row();
+
+    let mut score = 0;
+    let mut depth = 0;
+
+    let mut residue_buf = ResidueBuf::new();
+    while let Some((i, res)) = covered_hole(&matrix, &mut residue_buf) {
+        let rows = (i + 1)..res.end;
+        let pieces: i64 = negative_spaces(&matrix, rows.clone())
+            .map(|area| ((area + 3) / 4) as i64)
+            .sum();
+
+        matrix.remove_rows(rows);
+
+        score += std::cmp::max(1, pieces - depth);
+        depth += 1;
+    }
+
+    score * params.piece_estimate_factor + (matrix.rows() as i64) * params.row_factor
 }
 
 /// Computes the "penalty" for placing the given number of pieces.
@@ -35,12 +52,6 @@ pub fn score(params: &ScoreParams, matrix: &BasicMatrix) -> i64 {
 /// Note: used in A* to compute "g" value (path cost).
 pub fn penalty(params: &ScoreParams, depth: usize) -> i64 {
     (depth as i64) * params.piece_penalty
-}
-
-fn negative_space_score(matrix: &BasicMatrix) -> i64 {
-    negative_spaces(matrix, 0..matrix.rows())
-        .map(|area| ceil_4(area) as i64)
-        .sum()
 }
 
 /// Returns the area of each disjoint contiguous negative space in the given matrix.
@@ -96,15 +107,6 @@ where
     areas.into_iter().filter(|&a| a > 0)
 }
 
-/// Rounds `x` to the nearest multiple of 4.
-fn ceil_4(x: u16) -> u16 {
-    if x & 3 == 0 {
-        x
-    } else {
-        (x | 3) + 1
-    }
-}
-
 /// Given `xs` and `ys` both ordered lists of non-overlapping ranges, returns every pair
 /// of indices `(i, j)` such that `xs[i]` intersects with `ys[j]`.
 fn intersecting_ranges<'a, T: Ord>(
@@ -129,18 +131,61 @@ fn intersecting_ranges<'a, T: Ord>(
     })
 }
 
+type ResidueBuf = Vec<Range<u16>>;
+
+/// Searches for a hole covered by residue. If any is found returns `Some((i, r))` where
+/// `i` is the row containing the hole and `r` is the (half-open) range of rows above `i`
+/// containing the residue.
+///
+/// `buf` is used for internal bookkeeping to perform the algorithm, and ought to be
+/// reused to save on allocations.
+///
+/// Example:
+///
+/// 5 | . . . . .
+/// 4 | . x . . .  <-
+/// 3 | x x x . .  <- r
+/// 2 | x _ x x x
+/// 1 | x _ x x x  <- i
+/// 0 | x x x _ x         <= note: this is a valid hole, but the one above is found first.
+///
+/// Returns `Some((1, 3..5))`.
+#[allow(unused)]
+fn covered_hole(mat: &BasicMatrix, buf: &mut ResidueBuf) -> Option<(u16, Range<u16>)> {
+    let (n_rows, n_cols) = (mat.rows(), mat.cols());
+    // `buf[j]` holds the known range of residue cells in column `j`
+    buf.clear();
+    buf.resize(n_cols as usize, 0..0);
+    for i in (0..n_rows).rev() {
+        for j in 0..n_cols {
+            // do nothing for empty cells
+            if !mat.get((i, j)) {
+                continue;
+            }
+            let res = &mut buf[j as usize];
+            if res.start > i + 1 {
+                // prev cell was empty, so we finished finding a hole
+                return Some((i + 1, res.clone()));
+            } else {
+                // update the residue since the cell above was also filled
+                *res = i..std::cmp::max(i + 1, res.end);
+            }
+        }
+    }
+    // run a simplified version of the inner loop for underneath the bottom row, i.e. i=-1
+    for j in 0..n_cols {
+        let res = &buf[j as usize];
+        if res.start > 0 {
+            return Some((0, res.clone()));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::basic_matrix;
-
-    #[test]
-    fn test_ceil_4() {
-        assert_eq!(
-            (0..10).map(ceil_4).collect::<Vec<_>>(),
-            [0, 4, 4, 4, 4, 8, 8, 8, 8, 12]
-        );
-    }
 
     #[test]
     fn test_intersecting_ranges() {
@@ -254,5 +299,168 @@ mod test {
     #[test]
     fn test_negative_spaces_all_clear() {
         assert_eq!(neg_space(BasicMatrix::with_cols(5)), [0u16; 0]);
+    }
+
+    #[test]
+    fn test_covered_hole_0() {
+        let (xx, __) = (true, false);
+        assert_eq!(
+            covered_hole(&BasicMatrix::with_cols(5), &mut Default::default()),
+            None,
+            "zero"
+        );
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![[xx, xx, xx, xx, xx, xx], [xx, xx, xx, xx, xx, xx],],
+                &mut Default::default()
+            ),
+            None,
+            "full",
+        );
+    }
+
+    #[test]
+    fn test_covered_hole_1() {
+        let (xx, rr, __) = (true, true, false);
+        let mut rbuf = ResidueBuf::default();
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![
+                    [xx, xx, xx, xx, xx, xx],
+                    [__, xx, xx, xx, xx, xx],
+                    [rr, xx, xx, xx, xx, xx],
+                ],
+                &mut rbuf
+            ),
+            Some((1, 2..3)),
+            "cheese h=1"
+        );
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![
+                    [__, xx, xx, xx, xx, xx],
+                    [rr, xx, __, xx, xx, xx],
+                    [rr, xx, rr, xx, __, xx],
+                    [rr, xx, rr, xx, rr, xx],
+                    [rr, xx, rr, xx, rr, xx],
+                ],
+                &mut rbuf
+            ),
+            Some((2, 3..5)),
+            "cheese h=2"
+        );
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![
+                    [__, xx, xx, xx, xx, xx],
+                    [rr, xx, xx, __, xx, xx],
+                    [rr, xx, xx, __, xx, xx],
+                    [rr, xx, xx, rr, xx, xx],
+                    [rr, xx, xx, rr, xx, xx],
+                ],
+                &mut rbuf
+            ),
+            Some((1, 3..5)),
+            "cheese d=2"
+        );
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![
+                    [__, xx, xx, xx, xx, xx],
+                    [rr, xx, xx, __, xx, xx],
+                    [rr, xx, xx, rr, xx, __],
+                    [rr, xx, xx, rr, xx, xx],
+                    [rr, xx, xx, rr, xx, __],
+                ],
+                &mut rbuf
+            ),
+            Some((2, 3..4)),
+            "reuse rbuf"
+        );
+    }
+
+    #[test]
+    fn test_covered_hole_2() {
+        let (xx, rr, __) = (true, true, false);
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![
+                    [xx, xx, xx, __, xx, xx],
+                    [xx, xx, __, __, xx, xx],
+                    [xx, __, __, __, __, xx],
+                ],
+                &mut Default::default()
+            ),
+            None,
+            "funnel"
+        );
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![
+                    [xx, xx, xx, __, xx, xx],
+                    [__, __, __, rr, __, __],
+                    [__, __, __, rr, __, __],
+                    [__, __, __, rr, __, __],
+                ],
+                &mut Default::default()
+            ),
+            Some((0, 1..4)),
+            "spike"
+        );
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![
+                    [xx, xx, xx, __, xx, xx],
+                    [__, __, __, rr, __, __],
+                    [__, __, __, rr, __, __],
+                    [__, __, rr, rr, __, __],
+                ],
+                &mut Default::default()
+            ),
+            Some((1, 3..4)),
+            "overhang"
+        );
+    }
+
+    #[test]
+    fn test_covered_hole_3() {
+        let (xx, rr, __) = (true, true, false);
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![
+                    [xx, xx, xx, xx, xx, xx],
+                    [xx, __, xx, __, xx, xx],
+                    [xx, rr, xx, rr, xx, xx],
+                ],
+                &mut Default::default()
+            ),
+            Some((1, 2..3)),
+            "double"
+        );
+        // assert_eq!(
+        //     covered_hole(
+        //         &basic_matrix![
+        //             [xx, xx, xx, xx, xx, xx],
+        //             [xx, __, xx, __, xx, xx],
+        //             [xx, rr, xx, rr, xx, xx],
+        //             [__, __, __, rr, __, __],
+        //         ],
+        //         &mut Default::default()
+        //     ),
+        //     Some((1, 2..4)),
+        //     "double, right has greater residue"
+        // );
+        // assert_eq!(
+        //     covered_hole(
+        //         &basic_matrix![
+        //             [xx, xx, xx, __, xx, xx],
+        //             [xx, __, xx, __, xx, xx],
+        //             [xx, rr, xx, rr, xx, xx],
+        //         ],
+        //         &mut Default::default()
+        //     ),
+        //     Some((0, 2..3)),
+        //     "double, right has deeper residue"
+        // );
     }
 }

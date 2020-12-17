@@ -67,7 +67,7 @@ impl Args {
         let mut cfg = BFConfig::default();
         if let Some(Parameters(params)) = self.ai_params.as_ref() {
             cfg.scoring.row_factor = params[0];
-            cfg.scoring.nspace_factor = params[1];
+            cfg.scoring.piece_estimate_factor = params[1];
             cfg.scoring.piece_penalty = params[2];
             if let Some(&p) = params.get(3) {
                 cfg.search_limit = std::cmp::max(p, 1) as usize * 1_000;

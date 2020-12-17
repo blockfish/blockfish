@@ -4,3 +4,4 @@
 **/*.dep
 **/target
 .dir-locals.el
+circuit
