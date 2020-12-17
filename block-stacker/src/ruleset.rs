@@ -14,8 +14,6 @@ pub struct Ruleset {
     pub visible_rows: usize,
     /// Number of preview pieces the player sees.
     pub previews: usize,
-    /// The number of garbage rows continually present.
-    pub garbage_height: usize,
     /// The available poly-mino shapes in this ruleset.
     minos: HashMap<PieceType, PolyMino>,
 }

@@ -250,11 +250,11 @@ mod test {
         fn colors(hold: char, queue: &str) -> Vec<(char, bool)> {
             let snapshot = Snapshot {
                 hold: std::convert::TryFrom::try_from(hold).ok(),
-                queue: queue.chars().map(Color).collect(),
+                queue: queue.chars().map(Color::n).collect(),
                 matrix: BasicMatrix::with_cols(1),
             };
             available_colors(&snapshot.into())
-                .map(|(c, h)| (c.0, h))
+                .map(|(c, h)| (c.as_char(), h))
                 .collect()
         }
         assert_eq!(colors('.', "TJZ"), [('T', false), ('J', true)]);
@@ -268,16 +268,17 @@ mod test {
     #[test]
     fn test_inputs() {
         let snapshot = Snapshot {
-            queue: vec![Color('I')],
-            hold: Some(Color('J')),
+            queue: vec![Color::n('I')],
+            hold: Some(Color::n('J')),
             matrix: BasicMatrix::with_cols(10),
         };
         for pl in placements(&srs(), &snapshot.into()) {
-            match pl.simple() {
-                (Color('I'), (-2, 0, R0)) => assert_eq!(pl.inputs, [Left, Left, Left]),
-                (Color('I'), (-2, 6, R0)) => assert_eq!(pl.inputs, [Right, Right, Right]),
-                (Color('I'), (0, 4, R1)) => assert_eq!(pl.inputs, [CW, Right]),
-                (Color('J'), (-1, 2, R3)) => assert_eq!(pl.inputs, [Hold, CCW, Left]),
+            let (col, tf) = pl.simple();
+            match (col.as_char(), tf) {
+                ('I', (-2, 0, R0)) => assert_eq!(pl.inputs, [Left, Left, Left]),
+                ('I', (-2, 6, R0)) => assert_eq!(pl.inputs, [Right, Right, Right]),
+                ('I', (0, 4, R1)) => assert_eq!(pl.inputs, [CW, Right]),
+                ('J', (-1, 2, R3)) => assert_eq!(pl.inputs, [Hold, CCW, Left]),
                 _ => {}
             }
         }
@@ -286,14 +287,14 @@ mod test {
     #[test]
     fn test_overlapping_placements() {
         let snapshot = Snapshot {
-            queue: vec![Color('O')],
-            hold: Some(Color('S')),
+            queue: vec![Color::n('O')],
+            hold: Some(Color::n('S')),
             matrix: BasicMatrix::with_cols(10),
         };
         let mut places: Vec<_> = placements(&srs(), &snapshot.into())
             .map(|pl| {
-                let (Color(c), (i, j, r)) = pl.simple();
-                (c, r, i, j)
+                let (c, (i, j, r)) = pl.simple();
+                (c.as_char(), r, i, j)
             })
             .collect();
         places.sort();
@@ -335,14 +336,14 @@ mod test {
         let (xx, __) = (true, false);
         let snapshot = Snapshot {
             matrix: basic_matrix![[__, __, xx]],
-            queue: vec![Color('T')],
-            hold: Some(Color('L')),
+            queue: vec![Color::n('T')],
+            hold: Some(Color::n('L')),
         };
 
         let mut places: Vec<_> = placements(&srs(), &snapshot.into())
             .map(|pl| {
-                let (Color(c), (i, j, r)) = pl.simple();
-                (c, r, i, j, pl.did_hold())
+                let (c, (i, j, r)) = pl.simple();
+                (c.as_char(), r, i, j, pl.did_hold())
             })
             .collect();
         places.sort();
@@ -379,7 +380,7 @@ mod test {
             [__, __, __, __, __, xx],
             [__, __, __, __, __, xx],
         ];
-        let t = srs.shape(Color('T')).unwrap();
+        let t = srs.shape(Color::n('T')).unwrap();
         let pl = Place::new(t, (2, 3, R0), false);
 
         assert_eq!(pl.inputs, []);
@@ -407,7 +408,7 @@ mod test {
     ) -> Vec<(i16, i16, Vec<Input>)> {
         let snapshot = Snapshot {
             hold: None,
-            queue: vec![Color(color_char)],
+            queue: vec![Color::n(color_char)],
             matrix,
         };
         let mut places: Vec<_> = placements(&srs(), &snapshot.into())

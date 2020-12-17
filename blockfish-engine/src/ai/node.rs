@@ -188,7 +188,7 @@ mod test {
 
     #[test]
     fn test_state_operations() {
-        let queue = || "LTJI".chars().map(Color);
+        let queue = || "LTJI".chars().map(Color::n);
 
         let mut s: State = Snapshot {
             hold: None,
@@ -199,7 +199,7 @@ mod test {
         assert!(!s.is_max_depth());
         assert_eq!(s.matrix.rows(), 0);
         assert_eq!(s.matrix.cols(), 10);
-        assert_eq!(s.next(), (Some(Color('L')), Some(Color('T'))));
+        assert_eq!(s.next(), (Some(Color::n('L')), Some(Color::n('T'))));
 
         let srs = srs();
         for (i, color) in queue().enumerate() {
@@ -216,44 +216,44 @@ mod test {
     fn test_state_use_hold() {
         // something already in hold
         let mut s: State = Snapshot {
-            hold: Some(Color('S')),
-            queue: "LTJI".chars().map(Color).collect(),
+            hold: Some(Color::n('S')),
+            queue: "LTJI".chars().map(Color::n).collect(),
             matrix: BasicMatrix::with_cols(10),
         }
         .into();
-        assert_eq!(s.next(), (Some(Color('L')), Some(Color('S'))));
+        assert_eq!(s.next(), (Some(Color::n('L')), Some(Color::n('S'))));
         s.pop(true);
-        assert_eq!(s.next(), (Some(Color('T')), Some(Color('L'))));
+        assert_eq!(s.next(), (Some(Color::n('T')), Some(Color::n('L'))));
         s.pop(false);
-        assert_eq!(s.next(), (Some(Color('J')), Some(Color('L'))));
+        assert_eq!(s.next(), (Some(Color::n('J')), Some(Color::n('L'))));
         // nothing previously in hold
         s = Snapshot {
             hold: None,
-            queue: "LTJI".chars().map(Color).collect(),
+            queue: "LTJI".chars().map(Color::n).collect(),
             matrix: BasicMatrix::with_cols(10),
         }
         .into();
-        assert_eq!(s.next(), (Some(Color('L')), Some(Color('T'))));
+        assert_eq!(s.next(), (Some(Color::n('L')), Some(Color::n('T'))));
         s.pop(true);
-        assert_eq!(s.next(), (Some(Color('J')), Some(Color('L'))));
+        assert_eq!(s.next(), (Some(Color::n('J')), Some(Color::n('L'))));
     }
 
     #[test]
     fn test_state_nearly_empty_queue() {
         let mut s: State = Snapshot {
             hold: None,
-            queue: vec![Color('I')],
+            queue: vec![Color::n('I')],
             matrix: BasicMatrix::with_cols(10),
         }
         .into();
-        assert_eq!(s.next(), (Some(Color('I')), None));
+        assert_eq!(s.next(), (Some(Color::n('I')), None));
         s = Snapshot {
-            hold: Some(Color('O')),
+            hold: Some(Color::n('O')),
             queue: vec![],
             matrix: BasicMatrix::with_cols(10),
         }
         .into();
-        assert_eq!(s.next(), (None, Some(Color('O'))));
+        assert_eq!(s.next(), (None, Some(Color::n('O'))));
     }
 
     #[test]
@@ -268,7 +268,7 @@ mod test {
         let mut node = Node::new(
             Snapshot {
                 hold: None,
-                queue: vec![Color('L'), Color('O')],
+                queue: vec![Color::n('L'), Color::n('O')],
                 matrix,
             }
             .into(),
@@ -278,18 +278,19 @@ mod test {
 
         // x . . . L
         // x x L L L  ==>  x . . . L
-        let l = srs.shape(Color('L')).unwrap();
+        let l = srs.shape(Color::n('L')).unwrap();
         let tf = (-1, 2, R0);
         node = node.successor(&sp, 3, &Place::new(l, tf, false));
         assert_eq!(node.depth, 1);
-        assert_eq!(node.state.next().0, Some(Color('O')));
+        assert_eq!(node.state.next().0, Some(Color::n('O')));
+        assert_eq!(node.state.next().1, None);
         assert_eq!(node.state.matrix(), &basic_matrix![[xx, __, __, __, xx]]);
         assert_eq!(node.root_idx(), Some(3));
 
         // O O . . .
         // O O . . .
         // x . . . L
-        let o = srs.shape(Color('O')).unwrap();
+        let o = srs.shape(Color::n('O')).unwrap();
         let tf = (0, -1, R0);
         node = node.successor(&sp, 4, &Place::new(o, tf, false));
         assert_eq!(node.depth(), 2);
@@ -310,7 +311,7 @@ mod test {
         let (xx, __) = (true, false);
         Snapshot {
             hold: None,
-            queue: "LTJIZSO".chars().map(Color).collect(),
+            queue: "LTJIZSO".chars().map(Color::n).collect(),
             matrix: basic_matrix![
                 [xx, xx, xx, xx, __, xx, xx, xx, xx, xx],
                 [xx, xx, __, xx, xx, xx, xx, xx, xx, xx],

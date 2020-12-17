@@ -7,4 +7,4 @@ pub type PieceType = char;
 pub type CellColor = char;
 
 pub use ruleset::Ruleset;
-pub use stacker::Stacker;
+pub use stacker::{Config, Stacker};

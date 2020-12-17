@@ -188,7 +188,7 @@ impl<'de> Deserialize<'de> for Kick {
 /// Returns `(origin_row, origin_col, mat)` where `mat` is a normalized (no empty rows or
 /// columns on the far sides) view of the coords, with `(origin_row, origin_col)` as the
 /// origin.
-#[cfg(any(test, feature = "gen-stbl"))]
+#[cfg(any(test, feature = "gen-shtb"))]
 fn normalize_coords(coords: &[(u16, u16)]) -> (u16, u16, BasicMatrix) {
     assert!(!coords.is_empty());
     let min_row = coords.iter().map(|&(i, _)| i).min().unwrap();
@@ -201,7 +201,7 @@ fn normalize_coords(coords: &[(u16, u16)]) -> (u16, u16, BasicMatrix) {
     (min_row, min_col, mat)
 }
 
-#[cfg(feature = "gen-stbl")]
+#[cfg(feature = "gen-shtb")]
 impl KickTable {
     /// Generate a kick table for a particular shape given a ruleset.
     fn from_ruleset(rules: &block_stacker::Ruleset, typ: block_stacker::PieceType) -> Self {
@@ -223,7 +223,7 @@ impl KickTable {
     }
 }
 
-#[cfg(feature = "gen-stbl")]
+#[cfg(feature = "gen-shtb")]
 impl ShapeTable {
     /// Generate a shape table from the given game ruleset.
     pub fn from_ruleset(rules: &block_stacker::Ruleset) -> Self {
@@ -315,7 +315,7 @@ mod test {
     #[test]
     fn test_srs_col_range() {
         let srs = srs();
-        for col in "SZTJ".chars().map(Color) {
+        for col in "SZTJ".chars().map(Color::n) {
             // . 0 1 2 3 4 5 6 7 8 9 .
             // -----------------------
             //   x x .         x x .
@@ -335,7 +335,7 @@ mod test {
             assert_eq!(sh.valid_cols(Orientation::R3, 10), 0..=8);
         }
 
-        let i = srs.shape(Color('I')).unwrap();
+        let i = srs.shape(Color::n('I')).unwrap();
         assert_eq!(i.valid_cols(Orientation::R0, 10), 0..=6);
         assert_eq!(i.valid_cols(Orientation::R1, 10), -2..=7);
         assert_eq!(i.valid_cols(Orientation::R2, 10), 0..=6);
@@ -345,7 +345,7 @@ mod test {
         // -----------------------
         // . x x .         . x x .
         // . x x .         . x x .
-        let o = srs.shape(Color('O')).unwrap();
+        let o = srs.shape(Color::n('O')).unwrap();
         assert_eq!(o.valid_cols(Orientation::R0, 10), -1..=7);
         assert_eq!(o.valid_cols(Orientation::R1, 10), -1..=7);
         assert_eq!(o.valid_cols(Orientation::R2, 10), -1..=7);
@@ -381,7 +381,7 @@ mod test {
             [__, __, xx, __, __, __, __],
         ];
         let srs = srs();
-        let s = srs.shape(Color('S')).unwrap();
+        let s = srs.shape(Color::n('S')).unwrap();
         let peaks = |js: RangeInclusive<_>, r| js.map(|j| s.peak(&mat, j, r)).collect::<Vec<_>>();
         assert_eq!(peaks(0..=4, Orientation::R0), [0, 1, 1, -1, 0]);
         assert_eq!(peaks(-1..=4, Orientation::R1), [1, 2, 1, 0, 1, 0]);
@@ -400,7 +400,7 @@ mod test {
             [xx, xx, xx, __, __],
         ];
         let srs = srs();
-        let o = srs.shape(Color('O')).unwrap();
+        let o = srs.shape(Color::n('O')).unwrap();
         let peaks = |js: RangeInclusive<_>, r| js.map(|j| o.peak(&mat, j, r)).collect::<Vec<_>>();
         assert!(o.intersects(&mat, (3, 0, Orientation::R0)));
         assert!(!o.intersects(&mat, (4, 0, Orientation::R0)));
@@ -419,7 +419,7 @@ mod test {
             [xx, xx, xx, xx, xx, xx, xx, __, xx, xx],
         ];
         let srs = srs();
-        let s = srs.shape(Color('S')).unwrap();
+        let s = srs.shape(Color::n('S')).unwrap();
         assert_eq!(
             (0..=7)
                 .map(|j| s.peak(&mat, j, Orientation::R0))
@@ -432,16 +432,16 @@ mod test {
     fn test_normalize() {
         use crate::Orientation::*;
         let srs = srs();
-        for color in "SZ".chars().map(Color) {
+        for color in "SZ".chars().map(Color::n) {
             let s = srs.shape(color).unwrap();
             assert_eq!(s.normalize((5, 5, R0)), s.normalize((6, 5, R2)));
             assert_eq!(s.normalize((5, 5, R1)), s.normalize((5, 6, R3)));
         }
-        let o = srs.shape(Color('O')).unwrap();
+        let o = srs.shape(Color::n('O')).unwrap();
         for &r in &[R0, R1, R2, R3] {
             assert_eq!(o.normalize((5, 5, R0)), o.normalize((5, 5, r)));
         }
-        let i = srs.shape(Color('I')).unwrap();
+        let i = srs.shape(Color::n('I')).unwrap();
         assert_eq!(i.normalize((5, 5, R0)), i.normalize((6, 5, R2)));
         assert_eq!(i.normalize((5, 5, R1)), i.normalize((5, 6, R3)));
     }

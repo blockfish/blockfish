@@ -1,5 +1,5 @@
 use crate::{ruleset::Ruleset, CellColor, PieceType};
-use rand::{rngs::ThreadRng, Rng as _};
+use rand::{rngs::ThreadRng, Rng as _, RngCore};
 use std::rc::Rc;
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -8,6 +8,7 @@ use std::rc::Rc;
 #[derive(Clone)]
 pub struct Stacker {
     rules: Rc<Ruleset>,
+    rng: ThreadRng,
     matrix: Matrix,
     cheese: Cheese,
     current: Option<Piece>,
@@ -15,18 +16,41 @@ pub struct Stacker {
     held: Option<PieceType>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Config {
+    pub garbage: GarbageConfig,
+}
+
+#[derive(Clone, Debug)]
+pub struct GarbageConfig {
+    pub min_height: usize,
+    pub max_height: usize,
+    pub total_lines: Option<usize>,
+}
+
+impl Default for GarbageConfig {
+    fn default() -> Self {
+        GarbageConfig {
+            min_height: 4,
+            max_height: 9,
+            total_lines: None,
+        }
+    }
+}
+
 impl Stacker {
     /// Constructs a new stacker game state with ruleset `rules`.
-    pub fn new(rules: Rc<Ruleset>) -> Self {
+    pub fn new(rules: Rc<Ruleset>, cfg: Config) -> Self {
         let mut stacker = Stacker {
+            rng: rand::thread_rng(),
             matrix: Matrix::new(rules.cols as u16),
-            cheese: Cheese::new(rules.cols as u16),
+            cheese: Cheese::new(cfg.garbage, rules.cols as u16),
             current: None,
             queue: BagRandomizer::new(rules.types().collect()),
             held: None,
             rules,
         };
-        stacker.cheese();
+        stacker.cheese(false);
         stacker.new_piece();
         stacker
     }
@@ -42,9 +66,8 @@ impl Stacker {
     }
 
     /// Inserts the appropriate number of cheese rows to the bottom of the matrix.
-    fn cheese(&mut self) {
-        let count = self.rules.garbage_height - self.matrix.garbage_rows();
-        self.matrix.insert_below((&mut self.cheese).take(count));
+    fn cheese(&mut self, combo: bool) {
+        self.cheese.generate(&mut self.rng, &mut self.matrix, combo)
     }
 
     /// Returns the current piece's typ, if any.
@@ -71,7 +94,7 @@ impl Stacker {
 
     /// Returns the list of next previews.
     pub fn next(&self) -> &[PieceType] {
-        &self.queue.previews(self.rules.previews)
+        &self.queue[..self.rules.previews]
     }
 
     /// Move the current piece horizontally by `dx` squares. Returns `true` if the piece
@@ -117,10 +140,7 @@ impl Stacker {
             }
             None => (0, 0),
         };
-        if n == 0 {
-            // cheese when combo broken
-            self.cheese();
-        }
+        self.cheese(n > 0);
         self.new_piece();
         (n, ds)
     }
@@ -141,8 +161,8 @@ impl Stacker {
 
     /// Spawns a new piece with the next piece type from the queue.
     fn new_piece(&mut self) {
+        self.queue.refill(&mut self.rng, self.rules.previews + 1);
         self.current = self.queue.next().map(|typ| Piece::new(&self.rules, typ));
-        self.queue.ensure(self.rules.previews);
     }
 }
 
@@ -223,11 +243,9 @@ impl Matrix {
         (lines_cleared, garbage_cleared)
     }
 
-    /// Inserts `new_lines` onto the bottom of the matrix.
-    fn insert_below(&mut self, new_lines: impl IntoIterator<Item = Line>) {
-        for line in new_lines.into_iter() {
-            self.lines.insert(0, line);
-        }
+    /// Inserts a line, `line` onto the bottom of the matrix.
+    fn insert_below(&mut self, line: Line) {
+        self.lines.insert(0, line);
     }
 
     /// Returns the number of rows that are garbage lines.
@@ -405,81 +423,94 @@ impl Piece {
 struct BagRandomizer {
     bag: Vec<PieceType>,
     queue: Vec<PieceType>,
-    // TODO: RNG with explicit seeding, to allow rolling back the randomizer
-    rng: ThreadRng,
 }
 
 impl BagRandomizer {
     fn new(bag: Vec<PieceType>) -> Self {
         let queue = Vec::with_capacity(bag.len() * 2);
-        let rng = rand::thread_rng();
-        Self { bag, queue, rng }
+        Self { bag, queue }
     }
 
-    fn shuffle(&mut self) {
-        for i in 1..self.bag.len() {
-            let j = self.rng.gen_range(0, i);
-            self.bag.swap(i, j);
-        }
-    }
-
-    fn ensure(&mut self, n: usize) {
+    fn refill(&mut self, rng: &mut impl RngCore, n: usize) {
         while self.queue.len() < n {
-            self.shuffle();
+            // shuffle bag
+            for i in 1..self.bag.len() {
+                let j = rng.gen_range(0, i);
+                self.bag.swap(i, j);
+            }
+            // push onto end of queue
             self.queue.extend(self.bag.iter().cloned());
         }
     }
+}
 
-    fn previews(&self, n: usize) -> &[PieceType] {
-        assert!(self.queue.len() >= n, "not enough pieces");
-        &self.queue[0..n]
+impl std::ops::Deref for BagRandomizer {
+    type Target = [PieceType];
+    fn deref(&self) -> &[PieceType] {
+        &self.queue
     }
 }
 
 impl Iterator for BagRandomizer {
     type Item = PieceType;
-
     fn next(&mut self) -> Option<PieceType> {
-        self.ensure(1);
-        Some(self.queue.remove(0))
+        let &next = self.queue.get(0)?;
+        self.queue.remove(0);
+        Some(next)
     }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
 // Cheese rows
 
-// TODO: configure garbage depth, configure total num lines
-
 #[derive(Clone)]
 struct Cheese {
-    rng: ThreadRng,
+    cfg: GarbageConfig,
     cols: u16,
     prev_hole: Option<u16>,
+    count: usize,
 }
 
 impl Cheese {
-    fn new(cols: u16) -> Self {
+    fn new(cfg: GarbageConfig, cols: u16) -> Self {
         Cheese {
             cols,
-            rng: rand::thread_rng(),
+            cfg,
             prev_hole: None,
+            count: 0,
         }
     }
-}
 
-impl Iterator for Cheese {
-    type Item = Line;
-
-    fn next(&mut self) -> Option<Line> {
-        let cols = self.cols;
-        let hole = match self.prev_hole {
-            None => self.rng.gen_range(0, cols),
-            Some(prev) => {
-                let col = self.rng.gen_range(0, cols - 1);
-                (col + prev + 1) % cols
-            }
+    /// Generate cheese lines, adding them to the bottom of matrix `tgt`. Different number
+    /// of lines are added depending on if the last line clear was part of a combo,
+    /// indicated by `comboing`.
+    fn generate(&mut self, rng: &mut impl RngCore, tgt: &mut Matrix, comboing: bool) {
+        // target garbage height depending on if last piece was a combo
+        let height = if comboing {
+            std::cmp::min(self.cfg.min_height, self.cfg.max_height)
+        } else {
+            self.cfg.max_height
         };
-        self.prev_hole = Some(hole);
-        Some(Line::garbage(cols, hole))
+
+        // compute number of lines to add, from garbage rows present & total lines
+        let mut num = height.saturating_sub(tgt.garbage_rows());
+        if let Some(total) = self.cfg.total_lines {
+            num = std::cmp::min(num, total);
+        }
+
+        let cols = self.cols;
+        for _ in 0..num {
+            self.count += 1;
+            // don't pick previous garbage column if possible
+            let hole = match self.prev_hole {
+                None => rng.gen_range(0, cols),
+                Some(prev) => {
+                    let col = rng.gen_range(0, cols - 1);
+                    (col + prev + 1) % cols
+                }
+            };
+            self.prev_hole = Some(hole);
+            tgt.insert_below(Line::garbage(cols, hole));
+        }
     }
 }
