@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::{controller::Controller, view::View};
 
-static WINDOW_TITLE: &'static str = "Blockfish (v0.4.3)";
+static WINDOW_TITLE: &'static str = "Blockfish (v0.6.4)";
 
 // Error handling
 
