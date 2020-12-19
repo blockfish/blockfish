@@ -75,9 +75,13 @@ impl Node {
         if succ.root_idx == std::u16::MAX {
             succ.root_idx = idx as u16;
         }
-        succ.state.place(&place);
         succ.depth += 1;
-        succ.score = score(scoring, &succ.state.matrix);
+        succ.state.place(&place);
+        succ.score = if succ.state.is_goal() {
+            -10000
+        } else {
+            score(scoring, &succ.state.matrix)
+        };
         succ.penalty = penalty(scoring, succ.depth());
         succ
     }
@@ -99,11 +103,16 @@ pub struct State {
     matrix: BasicMatrix,
     queue_rev: Vec<Color>,
     has_held: bool,
+    is_goal: bool,
 }
 
 impl State {
     pub fn matrix(&self) -> &BasicMatrix {
         &self.matrix
+    }
+
+    pub fn is_goal(&self) -> bool {
+        self.is_goal
     }
 
     /// Returns `true` if this state is at the max depth, so no further placements are
@@ -138,7 +147,7 @@ impl State {
     /// Applies the given placement to this state, modifying the queue and matrix.
     fn place(&mut self, pl: &Place) {
         pl.shape().blit_to(&mut self.matrix, pl.transform());
-        self.matrix.sift_rows();
+        self.is_goal = self.matrix.sift_rows();
         self.pop(pl.did_hold());
     }
 
@@ -172,6 +181,7 @@ impl From<Snapshot> for State {
             matrix,
             queue_rev,
             has_held,
+            is_goal: false,
         }
     }
 }
@@ -257,7 +267,7 @@ mod test {
     }
 
     #[test]
-    fn test_node_place() {
+    fn test_node_successor() {
         let srs = srs();
         let sp = ScoreParams::default();
         let (xx, __) = (true, false);
@@ -275,6 +285,7 @@ mod test {
         );
         assert_eq!(node.depth, 0);
         assert_eq!(node.root_idx(), None);
+        assert_eq!(node.state.is_goal(), false);
 
         // x . . . L
         // x x L L L  ==>  x . . . L
@@ -286,6 +297,7 @@ mod test {
         assert_eq!(node.state.next().1, None);
         assert_eq!(node.state.matrix(), &basic_matrix![[xx, __, __, __, xx]]);
         assert_eq!(node.root_idx(), Some(3));
+        assert_eq!(node.state.is_goal(), true);
 
         // O O . . .
         // O O . . .
@@ -304,6 +316,7 @@ mod test {
                 [xx, xx, __, __, __],
             ]
         );
+        assert_eq!(node.state.is_goal(), false);
     }
 
     #[cfg(feature = "slow-tests")]

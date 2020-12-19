@@ -9,6 +9,7 @@ use thiserror::Error;
 pub struct ScoreParams {
     pub row_factor: i64,
     pub piece_estimate_factor: i64,
+    pub i_dependency_factor: i64,
     pub piece_penalty: i64,
 }
 
@@ -17,6 +18,7 @@ impl Default for ScoreParams {
         Self {
             row_factor: 0,
             piece_estimate_factor: 3,
+            i_dependency_factor: 15,
             piece_penalty: 4,
         }
     }
@@ -30,10 +32,11 @@ impl<'a> std::convert::TryFrom<&'a [i64]> for ScoreParams {
     type Error = ParseScoreParamsError;
     fn try_from(vs: &'a [i64]) -> Result<Self, ParseScoreParamsError> {
         match vs {
-            [v1, v2, v3] => Ok(ScoreParams {
+            [v1, v2, v3, v4] => Ok(ScoreParams {
                 row_factor: *v1,
                 piece_estimate_factor: *v2,
-                piece_penalty: *v3,
+                i_dependency_factor: *v3,
+                piece_penalty: *v4,
             }),
             _ => Err(ParseScoreParamsError),
         }
@@ -46,6 +49,7 @@ impl<'a> std::convert::TryFrom<&'a [i64]> for ScoreParams {
 pub fn score(params: &ScoreParams, matrix: &BasicMatrix) -> i64 {
     (piece_estimate(matrix.clone()) as i64) * params.piece_estimate_factor
         + (matrix.rows() as i64) * params.row_factor
+        + (i_dependencies(&matrix, 0..matrix.rows()).count() as i64) * params.i_dependency_factor
 }
 
 /// Computes the "penalty" for placing the given number of pieces.
@@ -57,7 +61,7 @@ pub fn penalty(params: &ScoreParams, depth: usize) -> i64 {
 
 /// Mystery's residue-based minimum piece estimate algorithm.
 fn piece_estimate(mut matrix: BasicMatrix) -> i64 {
-    matrix.insert_empty_bottom_row();
+    // matrix.insert_empty_bottom_row();
 
     let mut pieces = 0;
     let mut depth = 0;
@@ -84,6 +88,30 @@ fn negative_spaces<'a>(
     row_range: Range<u16>,
 ) -> impl Iterator<Item = u16> + 'a {
     gaps_contiguous_areas(row_range.map(move |i| matrix.gaps(i)))
+}
+
+/// Returns the columns containing I dependencies.
+fn i_dependencies<'a>(
+    matrix: &'a BasicMatrix,
+    row_range: Range<u16>,
+) -> impl Iterator<Item = u16> + 'a {
+    let cols = matrix.cols();
+    (0..cols).filter(move |&j| {
+        let mut count = None;
+        row_range.clone().any(|i| {
+            let c0 = (j == 0) || matrix.get((i, j - 1));
+            let c1 = matrix.get((i, j));
+            let c2 = (j == cols - 1) || matrix.get((i, j + 1));
+            if c0 && !c1 && c2 {
+                let count = count.get_or_insert(0);
+                *count += 1;
+                *count >= 3
+            } else {
+                count = None;
+                false
+            }
+        })
+    })
 }
 
 /// Returns the size of each contiguous area given by the overlapping, neighboring ranges
@@ -486,5 +514,63 @@ mod test {
         //     Some((0, 2..3)),
         //     "double, right has deeper residue"
         // );
+    }
+
+    #[test]
+    fn test_i_deps_1() {
+        let (xx, __) = (true, false);
+        let i_deps = |mat: BasicMatrix| i_dependencies(&mat, 0..mat.rows()).collect::<Vec<_>>();
+        assert_eq!(i_deps(basic_matrix![[__, __, __]]), &[] as &[u16]);
+        assert_eq!(i_deps(basic_matrix![[xx, xx, xx]]), &[] as &[u16]);
+
+        assert_eq!(
+            i_deps(basic_matrix![
+                [__, xx, xx, __],
+                [__, xx, xx, __],
+                [__, xx, xx, xx],
+            ]),
+            [0]
+        );
+
+        assert_eq!(
+            i_deps(basic_matrix![
+                [xx, xx, xx, xx, __],
+                [xx, __, xx, xx, __],
+                [xx, __, xx, xx, __],
+                [xx, __, xx, xx, xx],
+                [xx, xx, xx, xx, xx],
+            ]),
+            [1, 4]
+        );
+
+        assert_eq!(
+            i_deps(basic_matrix![
+                [xx, xx, xx, xx, __],
+                [xx, __, xx, xx, __],
+                [xx, __, xx, xx, __],
+                [xx, __, xx, xx, xx],
+                [xx, xx, xx, __, xx],
+                [xx, __, xx, __, xx],
+                [xx, __, xx, xx, xx],
+                [xx, __, xx, xx, xx],
+                [xx, __, xx, xx, xx],
+            ]),
+            [1, 4]
+        );
+
+        assert_eq!(
+            i_deps(basic_matrix![
+                [xx, xx, xx, __, xx],
+                [__, __, xx, __, xx],
+                [xx, __, xx, xx, xx],
+                [xx, __, xx, xx, xx],
+                [xx, xx, xx, xx, __],
+                [xx, __, xx, xx, __],
+                [xx, __, xx, xx, __],
+                [xx, __, __, __, xx],
+                [xx, __, xx, xx, xx],
+            ]),
+            [4]
+        );
     }
 }

@@ -287,13 +287,14 @@ mod test {
             }
         );
         assert_eq!(
-            "15/1,2,3".parse::<Config>().unwrap(),
+            "15/1,2,3,4".parse::<Config>().unwrap(),
             Config {
                 search_limit: 15_000,
                 scoring: ScoreParams {
                     row_factor: 1,
                     piece_estimate_factor: 2,
-                    piece_penalty: 3,
+                    i_dependency_factor: 3,
+                    piece_penalty: 4,
                 },
             }
         );

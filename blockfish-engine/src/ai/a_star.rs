@@ -35,11 +35,13 @@ impl<'s> Iterator for AStar<'s> {
     type Item = Node;
     fn next(&mut self) -> Option<Node> {
         let node = self.nodes.pop()?.0;
-        let scoring = self.scoring;
-        self.placements.set_state(node.state());
-        for (idx, place) in (&mut self.placements).enumerate() {
-            let succ = node.successor(scoring, idx, &place);
-            self.nodes.push(AStarNode(succ));
+        if !node.state().is_goal() {
+            let scoring = self.scoring;
+            self.placements.set_state(node.state());
+            for (idx, place) in (&mut self.placements).enumerate() {
+                let succ = node.successor(scoring, idx, &place);
+                self.nodes.push(AStarNode(succ));
+            }
         }
         Some(node)
     }

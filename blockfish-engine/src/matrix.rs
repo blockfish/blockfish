@@ -118,23 +118,24 @@ impl BasicMatrix {
         })
     }
 
-    /// Removes all rows that are either entirely occupied or entirely empty. Returns the
-    /// number of rows that were removed this way because they were full.
-    pub fn sift_rows(&mut self) -> usize {
+    /// Removes all rows that are either entirely occupied or entirely empty. Returns
+    /// `true` if the bottom row was removed.
+    pub fn sift_rows(&mut self) -> bool {
+        let mut bottom_removed = false;
         let mut dst_idx = 0;
-        let mut full_cnt = 0;
         for src_idx in 0..self.data.len() {
             let row_bits = self.data[src_idx];
-            if row_bits == full_row_bits(self.cols) {
-                full_cnt += 1;
-            } else if row_bits != empty_row_bits(self.cols) {
+            if row_bits == full_row_bits(self.cols) || row_bits == empty_row_bits(self.cols) {
+                if src_idx == 0 {
+                    bottom_removed = true;
+                }
+            } else {
                 self.data[dst_idx] = row_bits;
                 dst_idx += 1;
             }
         }
-
         self.data.resize_with(dst_idx, || unreachable!());
-        full_cnt
+        bottom_removed
     }
 
     pub fn remove_rows(&mut self, range: Range<u16>) {
@@ -344,7 +345,7 @@ mod test {
         ];
         assert_eq!(heights(&m), vec![2, 2, 1, 1, 2]);
 
-        assert_eq!(m.sift_rows(), 0);
+        assert_eq!(m.sift_rows(), false);
         assert_eq!(
             m,
             basic_matrix![[xx, xx, xx, xx, __], [xx, xx, __, __, xx],]
@@ -354,7 +355,7 @@ mod test {
         m.set((2, 3));
         m.set((1, 2));
         m.set((1, 3));
-        assert_eq!(m.sift_rows(), 1);
+        assert_eq!(m.sift_rows(), false);
         assert_eq!(
             m,
             basic_matrix![[xx, xx, xx, xx, __], [__, __, __, xx, __],]
@@ -362,11 +363,13 @@ mod test {
         assert_eq!(heights(&m), vec![1, 1, 1, 2, 0]);
 
         m.set((0, 4));
-        m.set((1, 2));
-        m.set((1, 0));
-        m.set((1, 1));
-        m.set((1, 4));
-        assert_eq!(m.sift_rows(), 2);
+        assert_eq!(m.sift_rows(), true);
+
+        m.set((0, 2));
+        m.set((0, 0));
+        m.set((0, 1));
+        m.set((0, 4));
+        assert_eq!(m.sift_rows(), true);
         assert_eq!(m.rows(), 0);
         assert_eq!(heights(&m), vec![0, 0, 0, 0, 0]);
     }
@@ -400,7 +403,7 @@ mod test {
         m.set((0, 0));
         m.set((0, 1));
         m.set((0, 2));
-        assert_eq!(m.sift_rows(), 1);
+        m.sift_rows();
     }
 
     #[test]
