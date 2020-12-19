@@ -1,6 +1,5 @@
 #!/usr/bin/sh
-cargo run \
-      -q --release \
+cargo run -q \
       --manifest-path ./blockfish-engine/Cargo.toml \
       --features race \
       --bin blockfish-race -- \

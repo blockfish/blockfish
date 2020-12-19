@@ -5,7 +5,9 @@ mod resources;
 mod util;
 mod view;
 
-use block_stacker::{Config, Ruleset, Stacker};
+use argh::FromArgs;
+use block_stacker::{Config as BSConfig, Ruleset, Stacker};
+use blockfish::Config as BFConfig;
 use sdl2::{event::Event, keyboard::Keycode};
 use std::{convert::TryFrom, time::Duration};
 use thiserror::Error;
@@ -42,11 +44,53 @@ impl From<sdl2::ttf::InitError> for Error {
     }
 }
 
+// Args
+
+/// Blockfish GUI client.
+#[derive(FromArgs)]
+struct Args {
+    #[argh(positional)]
+    goal: Option<usize>,
+    /// garbage level, defaults to 9
+    #[argh(option, short = 'g')]
+    garbage: Option<usize>,
+    /// minimum garbage level, defaults to 2
+    #[argh(option, short = 'G')]
+    min_garbage: Option<usize>,
+    /// integer used to seed the random number generator
+    #[argh(option, short = 's')]
+    seed: Option<u64>,
+    /// integer used to seed the random number generator
+    #[argh(option, short = 'A')]
+    ai_params: Option<BFConfig>,
+}
+
+impl Args {
+    fn to_game_config(&self) -> BSConfig {
+        let mut cfg = BSConfig::default();
+        cfg.prng_seed = self.seed;
+        cfg.garbage.total_lines = self.goal;
+        if let Some(h) = self.garbage {
+            cfg.garbage.max_height = h;
+        }
+        if let Some(h) = self.min_garbage {
+            cfg.garbage.min_height = h;
+        }
+        cfg
+    }
+
+    fn to_ai_config(&self) -> BFConfig {
+        self.ai_params.clone().unwrap_or_default()
+    }
+}
+
+// main
+
 type Result<T> = std::result::Result<T, Error>;
 
 pub fn main() {
     pretty_env_logger::init();
-    std::process::exit(match entry() {
+    std::process::exit(match entry(argh::from_env()) {
         Ok(_) => 0,
         Err(err) => {
             let mut trace: Option<&(dyn std::error::Error + 'static)> = Some(&err);
@@ -61,7 +105,7 @@ pub fn main() {
 
 // Entry point
 
-fn entry() -> Result<()> {
+fn entry(args: Args) -> Result<()> {
     let sdl = sdl2::init().map_err(Error::Sdl)?;
     let video = sdl.video().map_err(Error::Sdl)?;
     let ttf = sdl2::ttf::init()?;
@@ -74,11 +118,10 @@ fn entry() -> Result<()> {
     let texture_creator = canvas.texture_creator();
     let res = resources::Resources::load(&ttf)?;
 
-    let cfg = Config::default();
     let rules = Ruleset::guideline().into();
-    let stacker = Stacker::new(rules, cfg);
+    let stacker = Stacker::new(rules, args.to_game_config());
     let view = View::new(stacker.ruleset().clone(), res, &canvas, &texture_creator);
-    let mut ctl = Controller::new(stacker, view);
+    let mut ctl = Controller::new(stacker, args.to_ai_config(), view);
 
     let mut event_pump = sdl.event_pump().map_err(Error::Sdl)?;
 

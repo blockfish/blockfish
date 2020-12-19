@@ -16,13 +16,17 @@ use crate::{
     shape::{srs, ShapeTable},
     BasicMatrix, Color, Input,
 };
-use std::sync::{mpsc, Arc};
+use std::{
+    convert::TryInto,
+    sync::{mpsc, Arc},
+};
+use thiserror::Error;
 
 // Config
 
 pub use score::ScoreParams;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Config {
     pub search_limit: usize,
     pub scoring: ScoreParams,
@@ -33,6 +37,42 @@ impl Default for Config {
         Self {
             search_limit: 25_000,
             scoring: ScoreParams::default(),
+        }
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ParseConfigError {
+    #[error("invalid integer format")]
+    Int(#[from] std::num::ParseIntError),
+    #[error("invalid score parameters: {0}")]
+    ScoreParams(#[from] score::ParseScoreParamsError),
+    #[error("expected '<heap-size>' or '<heap-size>/<score-params>'")]
+    Other,
+}
+
+impl std::str::FromStr for Config {
+    type Err = ParseConfigError;
+    fn from_str(s: &str) -> Result<Self, ParseConfigError> {
+        let mut ss = s.split('/');
+        let search_limit = ss.next().ok_or(ParseConfigError::Other)?;
+        let search_limit = search_limit.parse::<usize>()? * 1_000;
+        let scoring = match ss.next() {
+            Some(s) => s
+                .split(',')
+                .map(|s| s.parse())
+                .collect::<Result<Vec<_>, _>>()?
+                .as_slice()
+                .try_into()?,
+            None => ScoreParams::default(),
+        };
+        if ss.next().is_some() {
+            Err(ParseConfigError::Other)
+        } else {
+            Ok(Config {
+                search_limit,
+                scoring,
+            })
         }
     }
 }
@@ -98,6 +138,8 @@ impl AI {
                 .map(|place| Root::new(place.into_inputs()))
                 .collect::<Vec<_>>();
 
+            let mut best = std::i64::MAX;
+
             let mut worker = Worker::new(&shtb, &cfg.scoring, cfg.search_limit, init_state);
             let mut iterations = 0;
             while let Some((root_idx, depth, score)) = worker.step() {
@@ -110,18 +152,21 @@ impl AI {
                     continue;
                 }
 
-                log::trace!(
-                    "{} root {} @ depth {}, score => {} (iteration #{})",
-                    if root.best_score < prev_score {
-                        "improved"
-                    } else {
-                        "DEGRADED"
-                    },
-                    root_idx,
-                    root.furthest_depth,
-                    root.best_score,
-                    iterations
-                );
+                if score <= best {
+                    log::trace!(
+                        "{} root {} @ depth {}, score => {} (iteration #{})",
+                        if root.best_score < prev_score {
+                            "improved"
+                        } else {
+                            "DEGRADED"
+                        },
+                        root_idx,
+                        root.furthest_depth,
+                        root.best_score,
+                        iterations
+                    );
+                    best = score;
+                }
 
                 if tx.send(root.to_suggestion()).is_err() {
                     log::warn!("ai channel dropped; stopping early");
@@ -225,5 +270,32 @@ impl Root {
             score: self.best_score,
             inputs: self.inputs.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_parse_config() {
+        assert_eq!(
+            "15".parse::<Config>().unwrap(),
+            Config {
+                search_limit: 15_000,
+                scoring: ScoreParams::default()
+            }
+        );
+        assert_eq!(
+            "15/1,2,3".parse::<Config>().unwrap(),
+            Config {
+                search_limit: 15_000,
+                scoring: ScoreParams {
+                    row_factor: 1,
+                    piece_estimate_factor: 2,
+                    piece_penalty: 3,
+                },
+            }
+        );
     }
 }

@@ -1,2 +1,5 @@
 [workspace]
 members = ["blockfish-engine", "blockfish-client", "block-stacker"]
+
+[profile.dev]
+opt-level = 2

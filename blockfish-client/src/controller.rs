@@ -1,6 +1,6 @@
 use crate::view::{self, View};
 use block_stacker::{PieceType, Stacker};
-use blockfish::{Input, StackerExt as _, Suggestion};
+use blockfish::{Config, Input, StackerExt as _, Suggestion, AI};
 use std::collections::HashMap;
 
 /// Holds both the view state and the game state, and bridges the gap between them by
@@ -11,6 +11,7 @@ pub struct Controller<'v> {
     stats: Stats,
     suggestions: Suggestions,
     evals: Evals,
+    ai_config: Config,
     engine: Option<EngineProcess>,
 }
 
@@ -24,13 +25,14 @@ pub enum UserInput {
 
 impl<'v> Controller<'v> {
     /// Constructs a new controller with the game state `stacker` and view `view`.
-    pub fn new(stacker: Stacker, view: View<'v>) -> Self {
+    pub fn new(stacker: Stacker, ai_config: Config, view: View<'v>) -> Self {
         let mut ctl = Controller {
             view,
             stacker,
             stats: Stats::new(),
             suggestions: Suggestions::new(),
             evals: Evals::new(),
+            ai_config,
             engine: None,
         };
         ctl.consult_engine();
@@ -176,7 +178,7 @@ impl<'v> Controller<'v> {
     fn consult_engine(&mut self) {
         self.suggestions.clear();
         self.evals.clear();
-        self.engine = engine(&self.stacker);
+        self.engine = engine(&self.stacker, self.ai_config.clone());
         log::trace!("consulting engine...");
         self.poll_engine();
         self.update_evals();
@@ -397,9 +399,9 @@ struct EngineProcess {
 /// Run the AI in the background from the initial state given by `stacker`.
 /// Returns `None` if a snapshot could not be produced by the state.
 // TODO: look into deriving a Stacker from a Snapshot?
-fn engine(stacker: &Stacker) -> Option<EngineProcess> {
+fn engine(stacker: &Stacker, cfg: Config) -> Option<EngineProcess> {
     let snapshot = stacker.snapshot()?;
-    let mut ai = blockfish::AI::new(blockfish::Config::default());
+    let mut ai = AI::new(cfg);
     ai.start(snapshot);
     let stacker = Box::new(stacker.clone());
     Some(EngineProcess { ai, stacker })

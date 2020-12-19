@@ -1,10 +1,11 @@
 use crate::BasicMatrix;
 use red_union_find::UF;
 use std::ops::Range;
+use thiserror::Error;
 
 // Parameters
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScoreParams {
     pub row_factor: i64,
     pub piece_estimate_factor: i64,
@@ -21,30 +22,30 @@ impl Default for ScoreParams {
     }
 }
 
+#[derive(Debug, Error)]
+#[error("expected exactly 3 values")]
+pub struct ParseScoreParamsError;
+
+impl<'a> std::convert::TryFrom<&'a [i64]> for ScoreParams {
+    type Error = ParseScoreParamsError;
+    fn try_from(vs: &'a [i64]) -> Result<Self, ParseScoreParamsError> {
+        match vs {
+            [v1, v2, v3] => Ok(ScoreParams {
+                row_factor: *v1,
+                piece_estimate_factor: *v2,
+                piece_penalty: *v3,
+            }),
+            _ => Err(ParseScoreParamsError),
+        }
+    }
+}
+
 /// Computes the "score" for the given snapshot. Lower is better.
 ///
 /// Note: used by A* to compute "h" value (remaining cost heuristic).
 pub fn score(params: &ScoreParams, matrix: &BasicMatrix) -> i64 {
-    let mut matrix = matrix.clone();
-    matrix.insert_empty_bottom_row();
-
-    let mut score = 0;
-    let mut depth = 0;
-
-    let mut residue_buf = ResidueBuf::new();
-    while let Some((i, res)) = covered_hole(&matrix, &mut residue_buf) {
-        let rows = (i + 1)..res.end;
-        let pieces: i64 = negative_spaces(&matrix, rows.clone())
-            .map(|area| ((area + 3) / 4) as i64)
-            .sum();
-
-        matrix.remove_rows(rows);
-
-        score += std::cmp::max(1, pieces - depth);
-        depth += 1;
-    }
-
-    score * params.piece_estimate_factor + (matrix.rows() as i64) * params.row_factor
+    (piece_estimate(matrix.clone()) as i64) * params.piece_estimate_factor
+        + (matrix.rows() as i64) * params.row_factor
 }
 
 /// Computes the "penalty" for placing the given number of pieces.
@@ -52,6 +53,29 @@ pub fn score(params: &ScoreParams, matrix: &BasicMatrix) -> i64 {
 /// Note: used in A* to compute "g" value (path cost).
 pub fn penalty(params: &ScoreParams, depth: usize) -> i64 {
     (depth as i64) * params.piece_penalty
+}
+
+/// Mystery's residue-based minimum piece estimate algorithm.
+fn piece_estimate(mut matrix: BasicMatrix) -> i64 {
+    matrix.insert_empty_bottom_row();
+
+    let mut pieces = 0;
+    let mut depth = 0;
+
+    let mut residue_buf = ResidueBuf::new();
+    while let Some((i, res)) = covered_hole(&matrix, &mut residue_buf) {
+        let rows = (i + 1)..res.end;
+        let pieces_to_fill: i64 = negative_spaces(&matrix, rows.clone())
+            .map(|area| ((area + 3) / 4) as i64)
+            .sum();
+
+        matrix.remove_rows(rows);
+
+        pieces += std::cmp::max(1, pieces_to_fill - depth);
+        depth += 1;
+    }
+
+    pieces
 }
 
 /// Returns the area of each disjoint contiguous negative space in the given matrix.

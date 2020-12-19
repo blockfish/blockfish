@@ -1,14 +1,17 @@
 use crate::{ruleset::Ruleset, CellColor, PieceType};
-use rand::{rngs::ThreadRng, Rng as _, RngCore};
+use rand::{Rng as _, RngCore, SeedableRng as _};
 use std::rc::Rc;
 
 //////////////////////////////////////////////////////////////////////////////////////////
 // Game logic
 
+type PRNG = rand_pcg::Pcg64Mcg;
+
 #[derive(Clone)]
 pub struct Stacker {
     rules: Rc<Ruleset>,
-    rng: ThreadRng,
+    rng: PRNG,
+    rng_seed: u64,
     matrix: Matrix,
     cheese: Cheese,
     current: Option<Piece>,
@@ -19,6 +22,7 @@ pub struct Stacker {
 #[derive(Clone, Debug, Default)]
 pub struct Config {
     pub garbage: GarbageConfig,
+    pub prng_seed: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -38,26 +42,44 @@ impl Default for GarbageConfig {
     }
 }
 
+impl Config {
+    fn prng(&self) -> (u64, PRNG) {
+        let seed = self
+            .prng_seed
+            // obtain the seed from an entropy based RNG
+            .unwrap_or_else(|| rand::thread_rng().next_u64());
+        let prng = PRNG::seed_from_u64(seed);
+        (seed, prng)
+    }
+}
+
 impl Stacker {
     /// Constructs a new stacker game state with ruleset `rules`.
     pub fn new(rules: Rc<Ruleset>, cfg: Config) -> Self {
+        let (rng_seed, rng) = cfg.prng();
         let mut stacker = Stacker {
-            rng: rand::thread_rng(),
             matrix: Matrix::new(rules.cols as u16),
             cheese: Cheese::new(cfg.garbage, rules.cols as u16),
             current: None,
-            queue: BagRandomizer::new(rules.types().collect()),
+            queue: BagRandomizer::new(rules.types()),
             held: None,
             rules,
+            rng,
+            rng_seed,
         };
         stacker.cheese(false);
-        stacker.new_piece();
+        stacker.spawn_from_queue();
         stacker
     }
 
     /// Returns the ruleset used by this stacker.
     pub fn ruleset(&self) -> &Rc<Ruleset> {
         &self.rules
+    }
+
+    /// Returns the original value used to seed the PRNG.
+    pub fn prng_seed(&self) -> u64 {
+        self.rng_seed
     }
 
     /// Returns a list of all occupied cells in the matrix.
@@ -141,7 +163,7 @@ impl Stacker {
             None => (0, 0),
         };
         self.cheese(n > 0);
-        self.new_piece();
+        self.spawn_from_queue();
         (n, ds)
     }
 
@@ -151,18 +173,30 @@ impl Stacker {
         let prev = self.current_piece_type();
         if let Some(held) = std::mem::replace(&mut self.held, prev) {
             // TODO: prevent repeat holds
-            self.current = Some(Piece::new(&self.rules, held));
+            self.spawn(held);
         } else {
             // no hold piece, so grab one from the queue
-            self.new_piece();
+            self.spawn_from_queue();
         }
         true
     }
 
     /// Spawns a new piece with the next piece type from the queue.
-    fn new_piece(&mut self) {
+    fn spawn_from_queue(&mut self) {
         self.queue.refill(&mut self.rng, self.rules.previews + 1);
-        self.current = self.queue.next().map(|typ| Piece::new(&self.rules, typ));
+        if let Some(typ) = self.queue.next() {
+            self.spawn(typ);
+        } else {
+            self.current = None;
+        }
+    }
+
+    /// Sets the current piece to a new piece of type `typ`. Checks for top out conditions.
+    fn spawn(&mut self, typ: PieceType) {
+        let pc = Piece::new(&self.rules, typ);
+        if !pc.coords(&self.rules).any(|c| self.matrix.get(c).is_some()) {
+            self.current = Some(pc);
+        }
     }
 }
 
@@ -426,7 +460,9 @@ struct BagRandomizer {
 }
 
 impl BagRandomizer {
-    fn new(bag: Vec<PieceType>) -> Self {
+    fn new(bag: impl IntoIterator<Item = PieceType>) -> Self {
+        let mut bag = bag.into_iter().collect::<Vec<_>>();
+        bag.sort(); // prevent us from getting fucked by nondeterminism :(
         let queue = Vec::with_capacity(bag.len() * 2);
         Self { bag, queue }
     }
@@ -495,7 +531,7 @@ impl Cheese {
         // compute number of lines to add, from garbage rows present & total lines
         let mut num = height.saturating_sub(tgt.garbage_rows());
         if let Some(total) = self.cfg.total_lines {
-            num = std::cmp::min(num, total);
+            num = std::cmp::min(num, total.saturating_sub(self.count));
         }
 
         let cols = self.cols;
@@ -512,5 +548,26 @@ impl Cheese {
             self.prev_hole = Some(hole);
             tgt.insert_below(Line::garbage(cols, hole));
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_prng() {
+        let cfg = Config {
+            prng_seed: Some(17549539402897300681),
+            garbage: GarbageConfig::default(),
+        };
+        let st1 = Stacker::new(Ruleset::guideline().into(), cfg.clone());
+        assert_eq!(st1.next(), &['L', 'S', 'I', 'O', 'J']);
+        let st2 = Stacker::new(Ruleset::guideline().into(), cfg.clone());
+        assert_eq!(st2.next(), &['L', 'S', 'I', 'O', 'J']);
+        assert_eq!(
+            st1.matrix().collect::<Vec<_>>(),
+            st2.matrix().collect::<Vec<_>>()
+        );
     }
 }
