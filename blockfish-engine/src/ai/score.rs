@@ -16,10 +16,10 @@ pub struct ScoreParams {
 impl Default for ScoreParams {
     fn default() -> Self {
         Self {
-            row_factor: 0,
-            piece_estimate_factor: 3,
-            i_dependency_factor: 15,
-            piece_penalty: 4,
+            row_factor: 5,
+            piece_estimate_factor: 10,
+            i_dependency_factor: 10,
+            piece_penalty: 10,
         }
     }
 }
