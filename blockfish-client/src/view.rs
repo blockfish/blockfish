@@ -1,7 +1,4 @@
-use crate::{
-    controls::Controls,
-    resources::Resources,
-};
+use crate::{controls::Controls, resources::Resources};
 use block_stacker::{CellColor, PieceType, Ruleset};
 use sdl2::{pixels::Color, rect::Rect, render::Texture};
 use std::{collections::HashMap, rc::Rc};
@@ -73,7 +70,7 @@ impl<'r> View<'r> {
 
     /// Sets the controls configuration to be displayed on the side of the view.
     pub fn set_controls(&mut self, controls: &Controls) {
-        use crate::controls::Action;
+        use crate::controls::{Action, EngineOp::*, GameOp::*};
 
         let label_text = |prefix: &str, actions: &[Action]| {
             let mut buf = String::with_capacity(16);
@@ -92,19 +89,21 @@ impl<'r> View<'r> {
             buf
         };
 
-        use blockfish::Input::*;
-        let left_right = &[Action::Game(Left), Action::Game(Right)];
-        let ccw_cw = &[Action::Game(CCW), Action::Game(CW)];
-        let sd_hd = &[Action::Game(SD), Action::Game(HD)];
+        let left_right = &[Action::Game(MoveLeft), Action::Game(MoveRight)];
+        let ccw_cw = &[Action::Game(RotateCCW), Action::Game(RotateCW)];
+        let sd_hd = &[Action::Game(SonicDrop), Action::Game(HardDrop)];
         let hold = &[Action::Game(Hold)];
+        let undo = &[Action::Game(Undo)];
+        let reset = &[Action::Game(Reset)];
         let game_ctrls = &mut self.controls[0].1;
-        game_ctrls.resize_with(4, Label::new);
+        game_ctrls.resize_with(6, Label::new);
         game_ctrls[0].set(&label_text("\u{2190}, \u{2192}:         ", left_right));
         game_ctrls[1].set(&label_text("ccw, cw:      ", ccw_cw));
         game_ctrls[2].set(&label_text("sd, hd:       ", sd_hd));
         game_ctrls[3].set(&label_text("hold:         ", hold));
+        game_ctrls[4].set(&label_text("undo:         ", undo));
+        game_ctrls[5].set(&label_text("reset:        ", reset));
 
-        use crate::controls::EngineOp::*;
         let toggle = &[Action::Engine(Toggle)];
         // let step = &[Action::Engine(StepForward), Action::Engine(StepBackward)];
         let switch = &[Action::Engine(Next), Action::Engine(Prev)];

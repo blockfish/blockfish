@@ -1,33 +1,51 @@
 use std::collections::HashMap;
 
-pub use blockfish::Input;
 pub use sdl2::keyboard::{Keycode, Mod};
 
 pub const DEFAULT_BINDINGS: &[(Action, KeyStroke)] = {
     use Action::*;
+    use EngineOp::*;
+    use GameOp::{Undo, *};
     use KeyStroke::*;
     use Keycode::*;
     &[
-        (Game(Input::Left), Only(Left)),
-        (Game(Input::Right), Only(Right)),
-        (Game(Input::CCW), Only(Z)),
-        (Game(Input::CW), Only(X)),
-        (Game(Input::Hold), Shift),
-        (Game(Input::SD), Only(Down)),
-        (Game(Input::HD), Only(Space)),
-        (Engine(EngineOp::Toggle), Control(E)),
-        (Engine(EngineOp::Next), Only(Tab)),
-        (Engine(EngineOp::Prev), Control(Tab)),
-        // (Engine(EngineOp::StepForward), Control(F)),
-        // (Engine(EngineOp::StepBackward), Control(B)),
-        (Engine(EngineOp::Goto), Only(Return)),
+        (Game(MoveLeft), Only(Left)),
+        (Game(MoveRight), Only(Right)),
+        (Game(RotateCCW), Only(Z)),
+        (Game(RotateCW), Only(X)),
+        (Game(Hold), Shift),
+        (Game(SonicDrop), Only(Down)),
+        (Game(HardDrop), Only(Space)),
+        (Game(Reset), Control(R)),
+        (Game(Undo), Control(Z)),
+        (Engine(Toggle), Control(E)),
+        (Engine(Next), Only(Tab)),
+        (Engine(Prev), Control(Tab)),
+        // (Engine(StepForward), Control(F)),
+        // (Engine(StepBackward), Control(B)),
+        (Engine(Goto), Only(Return)),
     ]
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Action {
-    Game(Input),
+    Game(GameOp),
     Engine(EngineOp),
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[repr(u8)]
+#[allow(dead_code)]
+pub enum GameOp {
+    MoveLeft,
+    MoveRight,
+    RotateCCW,
+    RotateCW,
+    Hold,
+    SonicDrop,
+    HardDrop,
+    Reset,
+    Undo,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]

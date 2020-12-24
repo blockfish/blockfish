@@ -1,5 +1,5 @@
 use crate::{
-    controls::{Action, Controls, EngineOp, Input},
+    controls::{Action, Controls, EngineOp, GameOp},
     view::View,
 };
 use block_stacker::Stacker;
@@ -11,6 +11,7 @@ pub struct Controller<'v> {
     view: Box<View<'v>>,
     controls: Controls,
     stacker: Stacker,
+    undo_list: Vec<(Stacker, Progress)>,
     progress: Progress,
     ai_config: BFConfig,
     engine: Option<Box<Engine>>,
@@ -29,11 +30,13 @@ impl<'v> Controller<'v> {
             controls,
             ai_config,
             stacker,
+            undo_list: Vec::with_capacity(100),
             progress: Progress::new(),
             engine: None,
         };
         ctl.view.set_controls(&ctl.controls);
         ctl.consult_engine();
+        ctl.undo_save();
         ctl.update_view(true, true, true, true);
         ctl
     }
@@ -87,7 +90,7 @@ impl<'v> Controller<'v> {
             self.progress.lines,
             self.progress.color_clears,
             self.progress.downstack,
-            stacker.garbage_config().total_lines,
+            stacker.config().garbage.total_lines,
         );
     }
 
@@ -110,34 +113,64 @@ impl<'v> Controller<'v> {
         }
     }
 
+    /// Save the current state to the undo list.
+    fn undo_save(&mut self) {
+        self.undo_list.push((self.stacker.clone(), self.progress.clone()));
+    }
+
+    /// Restore the current state from the undo list.
+    fn undo_restore(&mut self) {
+        let (stacker, progress) = self.undo_list.pop().expect("undo list cannot be empty!");
+        self.stacker = stacker;
+        self.progress = progress;
+    }
+
     /// Handles the user action `action`.
     pub fn handle(&mut self, action: Action) {
         match action {
-            Action::Game(inp) => self.handle_input(inp),
+            Action::Game(op) => self.handle_game_op(op),
             Action::Engine(op) => self.handle_engine_op(op),
         }
     }
 
     /// Handles a game input, updating both the stacker state and view accordingly.
-    fn handle_input(&mut self, inp: Input) {
-        let (p_chg, m_chg, q_chg) = match inp {
-            Input::Left | Input::Right => {
-                let dx = if inp == Input::Left { -1 } else { 1 };
+    fn handle_game_op(&mut self, op: GameOp) {
+        let (p_chg, m_chg, q_chg) = match op {
+            GameOp::MoveLeft | GameOp::MoveRight => {
+                let dx = if op == GameOp::MoveLeft { -1 } else { 1 };
                 (self.stacker.move_horizontal(dx), false, false)
             }
-            Input::CCW | Input::CW => {
-                let dr = if inp == Input::CCW { -1 } else { 1 };
+            GameOp::RotateCCW | GameOp::RotateCW => {
+                let dr = if op == GameOp::RotateCCW { -1 } else { 1 };
                 (self.stacker.rotate(dr), false, false)
             }
-            Input::SD => (self.stacker.sonic_drop(), false, false),
-            Input::Hold => {
+            GameOp::SonicDrop => (self.stacker.sonic_drop(), false, false),
+            GameOp::Hold => {
                 let chg = self.stacker.hold();
                 (chg, false, chg)
             }
-            Input::HD => {
+            GameOp::HardDrop => {
+                self.undo_save();
                 let (lc, ds) = self.stacker.hard_drop();
                 let cc = self.stacker.is_matrix_colorless();
                 self.progress.incr(lc, ds, cc);
+                (true, true, true)
+            }
+            GameOp::Reset => {
+                let ruleset = self.stacker.ruleset().clone();
+                let mut cfg = self.stacker.config();
+                cfg.prng_seed = None; // don't use the same RNG seed
+                self.stacker = Stacker::new(ruleset, cfg);
+                self.progress = Progress::new();
+                self.undo_list.clear();
+                self.undo_save();
+                (true, true, true)
+            }
+            GameOp::Undo => {
+                self.undo_restore();
+                if self.undo_list.is_empty() {
+                    self.undo_save();
+                }
                 (true, true, true)
             }
         };
@@ -191,6 +224,7 @@ impl<'v> Controller<'v> {
 }
 
 /// Holds the current statistics of this cheese race.
+#[derive(Clone)]
 struct Progress {
     pieces: usize,
     lines: usize,

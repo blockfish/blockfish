@@ -3,7 +3,6 @@
   "rows": 25,
   "visible_rows": 20,
   "previews": 5,
-  "garbage_height": 8,
   "minos": {
     "J": {
       "width": 3,

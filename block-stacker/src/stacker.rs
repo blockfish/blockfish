@@ -88,9 +88,12 @@ impl Stacker {
         self.rng_seed
     }
 
-    /// Returns the garbage generation settings.
-    pub fn garbage_config(&self) -> GarbageConfig {
-        self.cheese.cfg.clone()
+    /// Returns config settings used to initialize this stacker.
+    pub fn config(&self) -> Config {
+        Config {
+            prng_seed: Some(self.rng_seed),
+            garbage: self.cheese.cfg.clone(),
+        }
     }
 
     /// Returns a list of all occupied cells in the matrix.
