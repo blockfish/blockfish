@@ -32,6 +32,12 @@ pub struct GarbageConfig {
     pub total_lines: Option<usize>,
 }
 
+pub const NO_GARBAGE: GarbageConfig = GarbageConfig {
+    min_height: 0,
+    max_height: 0,
+    total_lines: Some(0),
+};
+
 impl Default for GarbageConfig {
     fn default() -> Self {
         GarbageConfig {
@@ -82,9 +88,19 @@ impl Stacker {
         self.rng_seed
     }
 
+    /// Returns the garbage generation settings.
+    pub fn garbage_config(&self) -> GarbageConfig {
+        self.cheese.cfg.clone()
+    }
+
     /// Returns a list of all occupied cells in the matrix.
     pub fn matrix<'a>(&'a self) -> impl Iterator<Item = ((u16, u16), PieceType)> + 'a {
         self.matrix.iter()
+    }
+
+    /// Returns `true` if the matrix is colorless.
+    pub fn is_matrix_colorless(&self) -> bool {
+        self.matrix.garbage_rows() == self.matrix.rows()
     }
 
     /// Inserts the appropriate number of cheese rows to the bottom of the matrix.
@@ -181,6 +197,13 @@ impl Stacker {
         true
     }
 
+    /// Moves the current piece back to its original spawn location.
+    pub fn reset_piece(&mut self) {
+        if let Some(typ) = self.current_piece_type() {
+            self.spawn(typ);
+        }
+    }
+
     /// Spawns a new piece with the next piece type from the queue.
     fn spawn_from_queue(&mut self) {
         self.queue.refill(&mut self.rng, self.rules.previews + 1);
@@ -197,6 +220,15 @@ impl Stacker {
         if !pc.coords(&self.rules).any(|c| self.matrix.get(c).is_some()) {
             self.current = Some(pc);
         }
+    }
+
+    /// "Freezes" the game state by making all the blocks "frozen" ('H'), turning off
+    /// further cheese generation, and preventing the queue from generating any pieces
+    /// beyond the visible previews.
+    pub fn freeze(&mut self) {
+        self.matrix.freeze();
+        self.cheese = Cheese::new(NO_GARBAGE, self.matrix.cols);
+        // TODO: transform queue into static queue w/o 7-bag
     }
 }
 
@@ -282,6 +314,10 @@ impl Matrix {
         self.lines.insert(0, line);
     }
 
+    fn rows(&self) -> usize {
+        self.lines.len()
+    }
+
     /// Returns the number of rows that are garbage lines.
     fn garbage_rows(&self) -> usize {
         self.lines.iter().take_while(|ln| ln.is_garbage()).count()
@@ -291,6 +327,13 @@ impl Matrix {
     fn iter<'a>(&'a self) -> impl Iterator<Item = ((u16, u16), CellColor)> + 'a {
         let lines = self.lines.iter().enumerate();
         lines.flat_map(|(i, ln)| ln.iter().map(move |(j, cc)| ((i as u16, j), cc)))
+    }
+
+    /// Replaces all occupid cells with 'H'.
+    fn freeze(&mut self) {
+        for line in self.lines.iter_mut() {
+            line.freeze();
+        }
     }
 }
 
@@ -349,6 +392,15 @@ impl Line {
         cells
             .filter(|&(_, cc)| cc != ' ')
             .map(|(j, cc)| (j as u16, cc))
+    }
+
+    /// Replaces all occupid cells with 'H'.
+    fn freeze(&mut self) {
+        for cell in self.cells.iter_mut() {
+            if *cell != ' ' {
+                *cell = 'H';
+            }
+        }
     }
 }
 

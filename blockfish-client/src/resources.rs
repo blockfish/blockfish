@@ -17,15 +17,23 @@ pub type Result<T> = std::result::Result<T, ResourceLoadError>;
 
 // Resources
 
-pub struct Resources<'ttf> {
-    pub hud_font: Font<'ttf, 'static>,
+pub struct Resources<'r> {
+    pub hud_font: Font<'r, 'static>,
+    pub hud_font_bold: Font<'r, 'static>,
+    pub hud_font_small: Font<'r, 'static>,
+    pub hud_font_small_bold: Font<'r, 'static>,
+    pub progress_font: Font<'r, 'static>,
 }
 
-impl<'ttf> Resources<'ttf> {
-    pub fn load(ttf: &'ttf Sdl2TtfContext) -> Result<Self> {
+impl<'r> Resources<'r> {
+    pub fn load(ttf: &'r Sdl2TtfContext) -> Result<Self> {
         log::info!("building resources from static font data");
         Ok(Resources {
-            hud_font: FIRA_CODE_SEMIBOLD.load(ttf, 16)?,
+            hud_font: FIRA_CODE_REGULAR.load(ttf, 16)?,
+            hud_font_bold: FIRA_CODE_SEMIBOLD.load(ttf, 16)?,
+            hud_font_small: FIRA_CODE_REGULAR.load(ttf, 14)?,
+            hud_font_small_bold: FIRA_CODE_SEMIBOLD.load(ttf, 14)?,
+            progress_font: FIRA_CODE_SEMIBOLD.load(ttf, 28)?,
         })
     }
 }
@@ -35,6 +43,10 @@ impl<'ttf> Resources<'ttf> {
 struct FontData<'a> {
     bytes: &'a [u8],
 }
+
+static FIRA_CODE_REGULAR: FontData<'static> = FontData {
+    bytes: include_bytes!("../../support/fira-code/FiraCode-Regular.ttf"),
+};
 
 static FIRA_CODE_SEMIBOLD: FontData<'static> = FontData {
     bytes: include_bytes!("../../support/fira-code/FiraCode-SemiBold.ttf"),

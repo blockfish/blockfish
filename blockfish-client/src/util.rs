@@ -1,18 +1,17 @@
 pub mod text_fmt {
-    pub fn plural<'a>(n: u32, what: &'a str) -> Plural<'a> {
-        Plural(n, what)
-    }
-
-    pub struct Plural<'a>(u32, &'a str);
-    impl<'a> std::fmt::Display for Plural<'a> {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            if self.0 == 1 {
-                write!(f, "1 {}", self.1)
-            } else {
-                write!(f, "{} {}s", self.0, self.1)
-            }
-        }
-    }
+    // pub fn plural<'a>(n: u32, what: &'a str) -> Plural<'a> {
+    //     Plural(n, what)
+    // }
+    // pub struct Plural<'a>(u32, &'a str);
+    // impl<'a> std::fmt::Display for Plural<'a> {
+    //     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    //         if self.0 == 1 {
+    //             write!(f, "1 {}", self.1)
+    //         } else {
+    //             write!(f, "{} {}s", self.0, self.1)
+    //         }
+    //     }
+    // }
 
     pub fn maybe<'a, T: std::fmt::Display>(v: Option<T>, alt: &'a str) -> Maybe<'a, T> {
         Maybe(v, alt)

@@ -1,6 +1,6 @@
 use crate::BasicMatrix;
 use red_union_find::UF;
-use std::ops::Range;
+use std::{convert::TryFrom, ops::Range};
 use thiserror::Error;
 
 // Parameters
@@ -11,6 +11,17 @@ pub struct ScoreParams {
     pub piece_estimate_factor: i64,
     pub i_dependency_factor: i64,
     pub piece_penalty: i64,
+}
+
+impl ScoreParams {
+    pub fn to_vec(&self) -> Vec<i64> {
+        vec![
+            self.row_factor,
+            self.piece_estimate_factor,
+            self.i_dependency_factor,
+            self.piece_penalty,
+        ]
+    }
 }
 
 impl Default for ScoreParams {
@@ -28,7 +39,7 @@ impl Default for ScoreParams {
 #[error("expected exactly 3 values")]
 pub struct ParseScoreParamsError;
 
-impl<'a> std::convert::TryFrom<&'a [i64]> for ScoreParams {
+impl<'a> TryFrom<&'a [i64]> for ScoreParams {
     type Error = ParseScoreParamsError;
     fn try_from(vs: &'a [i64]) -> Result<Self, ParseScoreParamsError> {
         match vs {
@@ -238,6 +249,18 @@ fn covered_hole(mat: &BasicMatrix, buf: &mut ResidueBuf) -> Option<(u16, Range<u
 mod test {
     use super::*;
     use crate::basic_matrix;
+
+    #[test]
+    fn test_parse_params() {
+        let params = ScoreParams {
+            row_factor: 1,
+            piece_estimate_factor: 2,
+            i_dependency_factor: 3,
+            piece_penalty: 4,
+        };
+        let vec = params.to_vec();
+        assert_eq!(ScoreParams::try_from(vec.as_slice()).unwrap(), params);
+    }
 
     #[test]
     fn test_intersecting_ranges() {

@@ -1,23 +1,21 @@
 #![windows_subsystem = "windows"]
 
 mod controller;
+mod controls;
 mod resources;
 mod util;
 mod view;
 
-use argh::FromArgs;
-use block_stacker::{Config as BSConfig, Ruleset, Stacker};
+use block_stacker::{Config as BSConfig, Ruleset};
 use blockfish::Config as BFConfig;
-use sdl2::{event::Event, keyboard::Keycode};
-use std::{convert::TryFrom, time::Duration};
+
+use argh::FromArgs;
+use sdl2::event::Event;
 use thiserror::Error;
 
-use crate::{controller::Controller, view::View};
-
-static WINDOW_TITLE: &'static str = "Blockfish (v0.4.3)";
+static VERSION: &'static str = "DEVELOPMENT BUILD";
 
 // Error handling
-
 #[derive(Debug, Error)]
 enum Error {
     #[error("{0}")]
@@ -26,22 +24,8 @@ enum Error {
     Resources(#[from] resources::ResourceLoadError),
 }
 
-impl From<sdl2::video::WindowBuildError> for Error {
-    fn from(e: sdl2::video::WindowBuildError) -> Self {
-        Error::Sdl(format!("{}", e))
-    }
-}
-
-impl From<sdl2::IntegerOrSdlError> for Error {
-    fn from(e: sdl2::IntegerOrSdlError) -> Self {
-        Error::Sdl(format!("{}", e))
-    }
-}
-
-impl From<sdl2::ttf::InitError> for Error {
-    fn from(e: sdl2::ttf::InitError) -> Self {
-        Error::Sdl(format!("{}", e))
-    }
+fn sdl_error(e: impl std::fmt::Display) -> Error {
+    Error::Sdl(format!("{}", e))
 }
 
 // Args
@@ -66,7 +50,7 @@ struct Args {
 }
 
 impl Args {
-    fn to_game_config(&self) -> BSConfig {
+    fn game_config(&self) -> BSConfig {
         let mut cfg = BSConfig::default();
         cfg.prng_seed = self.seed;
         cfg.garbage.total_lines = self.goal;
@@ -79,7 +63,7 @@ impl Args {
         cfg
     }
 
-    fn to_ai_config(&self) -> BFConfig {
+    fn ai_config(&self) -> BFConfig {
         self.ai_params.clone().unwrap_or_default()
     }
 }
@@ -106,69 +90,58 @@ pub fn main() {
 // Entry point
 
 fn entry(args: Args) -> Result<()> {
-    let sdl = sdl2::init().map_err(Error::Sdl)?;
-    let video = sdl.video().map_err(Error::Sdl)?;
-    let ttf = sdl2::ttf::init()?;
+    let sdl = sdl2::init().map_err(sdl_error)?;
+    let sdl_video = sdl.video().map_err(sdl_error)?;
 
-    let window = video
-        .window(WINDOW_TITLE, 900, 600)
+    let ttf = sdl2::ttf::init().map_err(sdl_error)?;
+    let resources = resources::Resources::load(&ttf)?;
+
+    let mut canvas = sdl_video
+        .window("Blockfish", view::DEFAULT_SIZE.0, view::DEFAULT_SIZE.1)
         .position_centered()
-        .build()?;
-    let mut canvas = window.into_canvas().build()?;
+        .build()
+        .map_err(sdl_error)?
+        .into_canvas()
+        .present_vsync()
+        .build()
+        .map_err(sdl_error)?;
+
+    let mut sdl_events = sdl.event_pump().map_err(sdl_error)?;
     let texture_creator = canvas.texture_creator();
-    let res = resources::Resources::load(&ttf)?;
 
-    let rules = Ruleset::guideline().into();
-    let stacker = Stacker::new(rules, args.to_game_config());
-    let view = View::new(stacker.ruleset().clone(), res, &canvas, &texture_creator);
-    let mut ctl = Controller::new(stacker, args.to_ai_config(), view);
+    let rules = std::rc::Rc::new(Ruleset::guideline());
+    let mut ctl = controller::Controller::new(
+        block_stacker::Stacker::new(rules.clone(), args.game_config()),
+        view::View::new(rules, resources, VERSION),
+        controls::Controls::default(),
+        args.ai_config(),
+    );
 
-    let mut event_pump = sdl.event_pump().map_err(Error::Sdl)?;
+    loop {
+        for evt in sdl_events.poll_iter() {
+            match evt {
+                // quit
+                Event::Quit { .. } => return Ok(()),
 
-    'running: loop {
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. } => break 'running,
-                Event::KeyDown { keycode, .. } => {
-                    match keycode.and_then(|c| Input::try_from(c).ok()) {
-                        Some(Input::Game(i)) => ctl.on_game_input(i),
-                        Some(Input::User(i)) => ctl.on_user_input(i),
-                        None => {}
+                // keyboard
+                // TODO: KeyUp events
+                Event::KeyDown {
+                    keycode: Some(keycode),
+                    keymod,
+                    ..
+                } => {
+                    if let Some(action) = ctl.controls().parse(keycode, keymod) {
+                        ctl.handle(action);
                     }
                 }
+
                 _ => {}
             }
         }
 
         ctl.poll_engine();
-        ctl.view().draw(&mut canvas);
+        ctl.view_mut().render_labels(&texture_creator);
+        ctl.view().paint(&mut canvas);
         canvas.present();
-        std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
-    }
-
-    Ok(())
-}
-
-enum Input {
-    Game(blockfish::Input),
-    User(controller::UserInput),
-}
-
-impl TryFrom<Keycode> for Input {
-    type Error = ();
-
-    fn try_from(code: Keycode) -> std::result::Result<Self, ()> {
-        match code {
-            Keycode::Space => Ok(Input::Game(blockfish::Input::HD)),
-            Keycode::Down => Ok(Input::Game(blockfish::Input::SD)),
-            Keycode::Left => Ok(Input::Game(blockfish::Input::Left)),
-            Keycode::Right => Ok(Input::Game(blockfish::Input::Right)),
-            Keycode::Z => Ok(Input::Game(blockfish::Input::CCW)),
-            Keycode::X => Ok(Input::Game(blockfish::Input::CW)),
-            Keycode::LShift => Ok(Input::Game(blockfish::Input::Hold)),
-            Keycode::S => Ok(Input::User(controller::UserInput::NextSuggestion)),
-            Keycode::A => Ok(Input::User(controller::UserInput::PrevSuggestion)),
-            _ => Err(()),
-        }
     }
 }

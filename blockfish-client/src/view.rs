@@ -1,624 +1,709 @@
-use crate::resources::Resources;
-use block_stacker::Ruleset;
-use sdl2::{
-    pixels::Color,
-    rect::Rect,
-    render::{Canvas, RenderTarget, Texture},
+use crate::{
+    controls::Controls,
+    resources::Resources,
 };
+use block_stacker::{CellColor, PieceType, Ruleset};
+use sdl2::{pixels::Color, rect::Rect, render::Texture};
 use std::{collections::HashMap, rc::Rc};
 
-//////////////////////////////////////////////////////////////////////////////////////////
-// View
+/// Default window size for view.
+pub static DEFAULT_SIZE: (u32, u32) = (1200, 720);
 
-/// Encapsulates the view logic.
-pub struct View<'h> {
-    rules: Rc<Ruleset>,
-    resources: Resources<'h>,
-    texture_creator: &'h TextureCreator,
-    theme: Theme,
+/// Holds all of the graphical elements to draw on the view, and where to draw them.
+pub struct View<'r> {
+    resources: Resources<'r>,
+    ruleset: Rc<Ruleset>,
+    colors: Colors,
     geom: Geometry,
-    matrix: MatrixCells,
-    piece: PieceCells,
-    ghost: PieceCells,
-    suggested: PieceCells,
-    hold: PieceCells,
-    next: Vec<PieceCells>,
-    hud: Vec<Label<'h>>,
+    queue: Cells,
+    matrix: Cells,
+    piece: Cells,
+    ghost: Cells,
+    eng_matrix: Cells,
+    eng_ghost: Cells,
+    motd: Label<'r>,
+    stats: Vec<Label<'r>>,
+    controls: [(Label<'r>, Vec<Label<'r>>); 2],
+    progress: (Label<'r>, bool),
+    piece_rating: (Label<'r>, Label<'r>, bool),
+    eng_overlay: [Label<'r>; 3],
+    eng_status: Label<'r>,
 }
 
-/// Contains information to be displayed by the HUD labels.
-#[derive(Clone, Debug)]
-pub struct LabelInfo {
-    pub pace: PaceLabelInfo,
-    pub engine: EngineLabelInfo,
-}
+/// Canvas type that `View` is able to paint to.
+pub type Canvas = sdl2::render::Canvas<sdl2::video::Window>;
 
-/// HUD label info related to the user's downstacking pace.
-#[derive(Clone, Debug)]
-pub struct PaceLabelInfo {
-    pub pieces: u32,
-    pub cleared: u32,
-    pub downstack: u32,
-    pub dpp: Option<f32>,
-    pub pace: Option<u32>,
-}
+/// Used to build `Texture`'s; annoying artefact of SDL2 API.
+pub type TextureCreator = sdl2::render::TextureCreator<sdl2::video::WindowContext>;
 
-/// HUD label info related to the engine status.
-#[derive(Clone, Debug)]
-pub enum EngineLabelInfo {
-    Thinking,
-    Suggesting {
-        index: usize,
-        total: usize,
-        score: i64,
-        base_eval: Option<i64>,
-        piece_eval: Option<i64>,
-    },
-    #[allow(dead_code)]
-    Failed,
-}
+impl<'r> View<'r> {
+    /// Constructs a new view.
+    pub fn new(ruleset: Rc<Ruleset>, resources: Resources<'r>, version_string: &str) -> Box<Self> {
+        let mut motd = Label::new();
+        motd.set(&format!("Blockfish {}", version_string));
 
-type TextureCreator = sdl2::render::TextureCreator<sdl2::video::WindowContext>;
+        let mut hd0 = Label::new();
+        let mut hd1 = Label::new();
+        hd0.set("game controls");
+        hd1.set("engine controls");
 
-impl<'h> View<'h> {
-    /// Construct a new view with given ruleset and resource data.
-    pub fn new(
-        rules: Rc<Ruleset>,
-        resources: Resources<'h>,
-        canvas: &Canvas<sdl2::video::Window>,
-        texture_creator: &'h TextureCreator,
-    ) -> Self {
-        let mut view = View {
-            rules,
+        let rows = ruleset.visible_rows as u16;
+        let cols = ruleset.cols as u16;
+
+        Box::new(Self {
+            ruleset,
             resources,
-            texture_creator,
-            theme: Default::default(),
-            geom: Default::default(),
-            matrix: MatrixCells::new(),
-            piece: PieceCells::new(),
-            ghost: PieceCells::new(),
-            suggested: PieceCells::new(),
-            hold: PieceCells::new(),
-            next: Vec::with_capacity(6),
-            hud: Vec::with_capacity(20),
-        };
-        view.set_size(canvas.window().size());
-        view
+            colors: Colors::dark_theme(),
+            geom: Geometry::new(rows, cols, DEFAULT_SIZE),
+            queue: Cells::new(None),
+            matrix: Cells::new(Some(rows)),
+            piece: Cells::new(Some(rows)),
+            ghost: Cells::new(Some(rows)),
+            eng_matrix: Cells::new(Some(rows)),
+            eng_ghost: Cells::new(Some(rows)),
+            stats: Vec::with_capacity(4),
+            controls: [(hd0, vec![]), (hd1, vec![])],
+            progress: (Label::new(), false),
+            piece_rating: (Label::new(), Label::new(), true),
+            eng_overlay: [Label::new(), Label::new(), Label::new()],
+            eng_status: Label::new(),
+            motd,
+        })
     }
 
-    /// Resizes the view to fit the window dimensions `(w, h)`.
-    pub fn set_size(&mut self, (w, h): (u32, u32)) {
-        self.geom = Geometry::new(&self.rules, &self.resources, w, h);
-    }
+    /// Sets the controls configuration to be displayed on the side of the view.
+    pub fn set_controls(&mut self, controls: &Controls) {
+        use crate::controls::Action;
 
-    /// Sets the contents of the matrix to be `cells`, given by each `(coord, color)`
-    /// pair.
-    pub fn set_cells(&mut self, cells: impl IntoIterator<Item = ((u16, u16), char)>) {
-        self.matrix.clear();
-        for (coord, color) in cells {
-            self.matrix.add(color, coord);
-        }
-    }
-
-    /// Sets the contents of the next queue.
-    pub fn set_next(&mut self, pcs: impl IntoIterator<Item = char>) {
-        for (i, color) in pcs.into_iter().enumerate() {
-            if i == self.next.len() {
-                self.next.push(PieceCells::new());
-            }
-            self.next[i].set(color, self.rules.coords(color, 0));
-        }
-    }
-
-    /// Sets the hold piece.
-    pub fn set_hold(&mut self, color: char) {
-        self.hold.set(color, self.rules.coords(color, 0));
-    }
-
-    /// Clears the hold piece.
-    pub fn clear_hold(&mut self) {
-        self.hold.clear();
-    }
-
-    /// Sets the current piece and the ghost piece's row.
-    pub fn set_piece(&mut self, color: char, row: i16, col: i16, rot: i32, ghost_row: i16) {
-        let rules = &self.rules;
-        let get_coords = move |row| {
-            rules.coords(color, rot).map(move |(i, j)| {
-                let i = ((i as i16) + row) as u16;
-                let j = ((j as i16) + col) as u16;
-                (i, j)
-            })
-        };
-
-        let coords = get_coords(row);
-        let ghost_coords = get_coords(ghost_row);
-        self.piece.set(color, coords);
-        self.ghost.set(color, ghost_coords);
-    }
-
-    /// Sets the suggested piece.
-    pub fn set_suggested(&mut self, color: char, row: i16, col: i16, rot: i32) {
-        let rules = &self.rules;
-        let coords = rules.coords(color, rot).map(move |(i, j)| {
-            let i = ((i as i16) + row) as u16;
-            let j = ((j as i16) + col) as u16;
-            (i, j)
-        });
-        self.suggested.set(color, coords);
-    }
-
-    /// Removes the suggested piece.
-    pub fn clear_suggested(&mut self) {
-        self.suggested.clear();
-    }
-
-    /// Sets the HUD label text based on the provided info.
-    pub fn set_hud_labels(&mut self, info: LabelInfo) {
-        use self::TextStyle::*;
-        use crate::util::text_fmt::*;
-
-        // label!(...) sets the next label text according to a format string.
-        let mut count = 0;
-        let mut set_next = |style: TextStyle, args: std::fmt::Arguments| {
-            if count >= self.hud.len() {
-                self.hud.push(Label::new());
-            }
-            count += 1;
-            self.hud[count - 1].set(style, args);
-        };
-
-        macro_rules! label {
-            ($s:expr, $($fmt:tt)*) => {{
-                set_next($s, format_args!($($fmt)*))
-            }}
-        }
-
-        label!(Normal, "{}", plural(info.pace.pieces, "piece"));
-        label!(Normal, "{}", plural(info.pace.downstack, "garbage line"));
-        label!(Normal, "{}", plural(info.pace.cleared, "total line"));
-        label!(Normal, "{} dpp", maybe_f32(info.pace.dpp, "?"));
-        label!(Normal, "{} pace", maybe(info.pace.pace, "?"));
-        label!(Normal, "");
-
-        label!(Highlight, "* engine enabled *");
-        match info.engine {
-            EngineLabelInfo::Thinking => label!(Normal, "thinking ..."),
-            EngineLabelInfo::Failed => {
-                label!(Bad, "failed :(");
-            }
-            EngineLabelInfo::Suggesting {
-                index,
-                total,
-                score,
-                base_eval,
-                piece_eval,
-            } => {
-                label!(Normal, "suggestion {} of {}", index + 1, total);
-                if let Some(base_eval) = base_eval {
-                    label!(Normal, "base eval: {}", base_eval);
-                    let score_diff = score - base_eval;
-                    label!(goodbad(score_diff), "suggestion: {:+}", score_diff);
-                    if let Some(piece_score) = piece_eval {
-                        let piece_diff = piece_score - base_eval;
-                        label!(goodbad(piece_diff), "this piece: {:+}", piece_diff);
-                    }
+        let label_text = |prefix: &str, actions: &[Action]| {
+            let mut buf = String::with_capacity(16);
+            buf.push_str(prefix);
+            for (i, &action) in actions.iter().enumerate() {
+                if i > 0 {
+                    buf.push_str(", ");
+                }
+                if let Some(ks) = controls.key_stroke(action) {
+                    use std::fmt::Write as _;
+                    write!(&mut buf, "{}", ks).unwrap();
+                } else {
+                    buf.push_str("--");
                 }
             }
-        }
+            buf
+        };
 
-        for (i, label) in self.hud.iter_mut().enumerate() {
-            if i >= count {
-                label.clear();
-            } else {
-                label.repaint(
-                    &self.texture_creator,
-                    &self.theme.text,
-                    &self.resources.hud_font,
-                );
-            }
-        }
+        use blockfish::Input::*;
+        let left_right = &[Action::Game(Left), Action::Game(Right)];
+        let ccw_cw = &[Action::Game(CCW), Action::Game(CW)];
+        let sd_hd = &[Action::Game(SD), Action::Game(HD)];
+        let hold = &[Action::Game(Hold)];
+        let game_ctrls = &mut self.controls[0].1;
+        game_ctrls.resize_with(4, Label::new);
+        game_ctrls[0].set(&label_text("\u{2190}, \u{2192}:         ", left_right));
+        game_ctrls[1].set(&label_text("ccw, cw:      ", ccw_cw));
+        game_ctrls[2].set(&label_text("sd, hd:       ", sd_hd));
+        game_ctrls[3].set(&label_text("hold:         ", hold));
+
+        use crate::controls::EngineOp::*;
+        let toggle = &[Action::Engine(Toggle)];
+        // let step = &[Action::Engine(StepForward), Action::Engine(StepBackward)];
+        let switch = &[Action::Engine(Next), Action::Engine(Prev)];
+        let go_to = &[Action::Engine(Goto)];
+        let eng_ctrls = &mut self.controls[1].1;
+        eng_ctrls.resize_with(3, Label::new);
+        eng_ctrls[0].set(&label_text("toggle:       ", toggle));
+        // eng_ctrls[1].set(&label_text("step sugg:    ", step));
+        eng_ctrls[1].set(&label_text("switch sugg:  ", switch));
+        eng_ctrls[2].set(&label_text("go to sugg:   ", go_to));
     }
 
-    /// Displays the view onto the canvas `dc`.
-    pub fn draw(&self, dc: &mut Canvas<impl RenderTarget>) {
+    /// Sets the next previews to contain each piece type in `previews`, and the hold
+    /// space to contain `hold`.
+    pub fn set_queue<P>(&mut self, previews: P, hold: Option<PieceType>)
+    where
+        P: IntoIterator<Item = PieceType>,
+    {
+        self.queue.clear();
+        let ruleset = self.ruleset.as_ref();
         let geom = &self.geom;
-        let rows = self.rules.visible_rows as u16;
-        let solid_colors = &self.theme.cell_colors;
-        let ghost_colors = &self.theme.ghost_colors;
-
-        dc.set_blend_mode(sdl2::render::BlendMode::Blend);
-        dc.set_draw_color(self.theme.background);
-        dc.clear();
-
-        self.matrix.draw(
-            SolidCanvasDraw(dc, solid_colors),
-            MatrixCellGeom(geom, rows),
-        );
-
-        self.suggested.draw(
-            OutlineCanvasDraw(dc, ghost_colors),
-            MatrixCellGeom(geom, rows),
-        );
-
-        self.ghost.draw(
-            SolidCanvasDraw(dc, ghost_colors),
-            MatrixCellGeom(geom, rows),
-        );
-
-        self.piece.draw(
-            SolidCanvasDraw(dc, solid_colors),
-            MatrixCellGeom(geom, rows),
-        );
-
-        dc.set_draw_color(self.theme.matrix_border);
-        dc.draw_rect(self.geom.matrix_rect().into())
-            .expect("border failed");
-
-        self.hold
-            .draw(SolidCanvasDraw(dc, solid_colors), HoldCellGeom(geom));
-
-        for (i, pc) in self.next.iter().enumerate() {
-            pc.draw(SolidCanvasDraw(dc, solid_colors), NextCellGeom(geom, i));
-        }
-
-        for (i, label) in self.hud.iter().enumerate() {
-            label.draw(self.geom.hud_text_pos(i), dc);
-        }
-    }
-}
-
-/// Facilitates drawing a matrix consisting of many cells of various colors.
-#[derive(Clone)]
-struct MatrixCells(HashMap<char, Vec<(u16, u16)>>);
-
-impl MatrixCells {
-    fn new() -> Self {
-        Self(HashMap::with_capacity(10))
-    }
-
-    fn clear(&mut self) {
-        for coords in self.0.values_mut() {
-            coords.clear();
+        let hold = hold.into_iter();
+        let cells = hold.flat_map(|ty| ruleset.coords(ty, 0).map(move |ij| (ij, ty)));
+        self.queue.insert(cells, |i, j| geom.hold_cell(i, j));
+        for (idx, ty) in previews.into_iter().enumerate() {
+            let cells = ruleset.coords(ty, 0).map(|ij| (ij, ty));
+            self.queue.insert(cells, |i, j| geom.next_cell(idx, i, j));
         }
     }
 
-    fn add(&mut self, color: char, coord: (u16, u16)) {
-        self.0.entry(color).or_default().push(coord);
+    /// Sets the contents of the user's matrix, given a list of cells represented by
+    /// `((row, col), cell_color)`.
+    pub fn set_matrix<I>(&mut self, cells: I)
+    where
+        I: IntoIterator<Item = ((u16, u16), CellColor)>,
+    {
+        let geom = &self.geom;
+        self.matrix.clear();
+        self.matrix.insert(cells, |i, j| geom.main_cell(i, j));
     }
 
-    fn draw(&self, mut cs: impl CellStyle, cg: impl CellGeom) {
-        for (&color, coords) in self.0.iter() {
-            cs.draw_cells(&cg, color, &coords);
+    /// Sets the contents of the engine's matrix.
+    pub fn set_engine_matrix<I>(&mut self, cells: I)
+    where
+        I: IntoIterator<Item = ((u16, u16), CellColor)>,
+    {
+        let geom = &self.geom;
+        self.eng_matrix.clear();
+        self.eng_matrix.insert(cells, |i, j| geom.eng_cell(i, j));
+    }
+
+    /// Sets the user's current piece to be type `ty` at row `i`, column `j`, rotation
+    /// `r`, with ghost piece shown at row `g`.
+    pub fn set_piece(&mut self, ty: PieceType, i: i16, j: i16, r: i32, g: i16) {
+        let ruleset = self.ruleset.as_ref();
+        let geom = &self.geom;
+        let cells = |i: i16| {
+            ruleset.coords(ty, r).map(move |(i_off, j_off)| {
+                let i = (i + i_off as i16) as u16;
+                let j = (j + j_off as i16) as u16;
+                ((i, j), ty)
+            })
+        };
+        self.piece.clear();
+        self.piece.insert(cells(i), |i, j| geom.main_cell(i, j));
+        self.ghost.clear();
+        self.ghost.insert(cells(g), |i, j| geom.main_cell(i, j));
+    }
+
+    /// Clears the user's current piece, so no piece or ghost is shown.
+    pub fn clear_piece(&mut self) {
+        self.piece.clear();
+        self.ghost.clear();
+    }
+
+    /// Sets the engine's suggested piece to be type `ty` at row `i`, column `j`, rotation
+    /// `r`.
+    pub fn set_engine_piece(&mut self, ty: PieceType, i: i16, j: i16, r: i32) {
+        let geom = &self.geom;
+        let cells = self.ruleset.coords(ty, r).map(move |(i_off, j_off)| {
+            let i = (i + i_off as i16) as u16;
+            let j = (j + j_off as i16) as u16;
+            ((i, j), ty)
+        });
+        self.eng_ghost.clear();
+        self.eng_ghost.insert(cells, |i, j| geom.eng_cell(i, j));
+    }
+
+    /// Clears the engine's suggested piece, so no piece is shown.
+    pub fn clear_engine_piece(&mut self) {
+        self.eng_ghost.clear();
+    }
+
+    /// Sets the rating shown for the user's current piece. If `rating` is
+    /// `Some((static_eval, score))`, indicates that the static evaluation after placing
+    /// the current piece is `static_eval`, and the score for the best sequence following
+    /// that placement is `score`.  If `rating` is `None`, indicates that the engine is
+    /// still computing the rating.
+    #[allow(unused)]
+    pub fn set_piece_rating(&mut self, rating: Option<(i64, i64)>) {
+        let (lbl0, lbl1, working) = &mut self.piece_rating;
+        if let Some((static_eval, score)) = rating {
+            lbl0.set(&format!("engine rating: {} ", score));
+            lbl1.set(&format!("static eval: {}", static_eval));
+            *working = true;
+        } else {
+            lbl0.clear();
+            lbl1.clear();
+            *working = false;
         }
     }
-}
 
-/// Facilitates drawing a piece with a few cells and a single color.
-#[derive(Clone)]
-struct PieceCells(char, Vec<(u16, u16)>);
-
-impl PieceCells {
-    fn new() -> Self {
-        Self('G', Vec::with_capacity(4))
-    }
-
-    fn clear(&mut self) {
-        self.1.clear();
-    }
-
-    fn set(&mut self, color: char, coords: impl IntoIterator<Item = (u16, u16)>) {
-        self.0 = color;
-        self.1.clear();
-        self.1.extend(coords);
-    }
-
-    fn draw(&self, mut cs: impl CellStyle, cg: impl CellGeom) {
-        cs.draw_cells(&cg, self.0, &self.1);
-    }
-}
-
-/// Trait for drawing cells of different colors.
-trait CellStyle {
-    fn prepare(&mut self, color: char) -> bool;
-    fn draw_rect(&mut self, rect: Rect);
-
-    fn draw_cells(&mut self, geom: &impl CellGeom, color: char, cells: &[(u16, u16)]) {
-        if cells.is_empty() {
-            return;
+    /// Sets the game statistics to be shown according to the given values:
+    ///
+    /// - `pc`: number of pieces.
+    /// - `lc`: number of total lines cleared.
+    /// - `cc`: number of color clears.
+    /// - `ds`: number of garbage lines cleared ("downstack").
+    /// - `ds_goal`: total number of garbage lines to clear.
+    pub fn set_stats(
+        &mut self,
+        pc: usize,
+        lc: usize,
+        cc: usize,
+        ds: usize,
+        ds_goal: Option<usize>,
+    ) {
+        let mut pace = None;
+        if ds > 0 {
+            pace = Some((100 * pc + ds - 1) / ds);
         }
-        if !self.prepare(color) {
-            return;
+
+        let mut dpp = None;
+        if pc > 0 {
+            dpp = Some((ds as f32) / (pc as f32));
         }
-        for &coord in cells.iter() {
-            if let Some(rect) = geom.cell_rect(coord) {
-                self.draw_rect(rect);
+
+        let progress_label;
+        let finished;
+        if let Some(goal) = ds_goal {
+            progress_label = format!("{}/{}L", ds, goal);
+            finished = ds >= goal;
+        } else {
+            progress_label = format!("{}L", ds);
+            finished = false;
+        };
+
+        use crate::util::text_fmt::*;
+        self.stats.resize_with(5, Label::new);
+        self.stats[0].set(&format!("pieces:        {}", pc));
+        self.stats[1].set(&format!("lines:         {}", lc));
+        self.stats[2].set(&format!("color clears:  {}", cc));
+        self.stats[3].set(&format!("dpp:           {}", maybe_f32(dpp, "?")));
+        self.stats[4].set(&format!("100L pace:     {}", maybe(pace, "\u{221e}")));
+        self.progress.0.set(&progress_label);
+        self.progress.1 = finished;
+    }
+
+    /// Sets the information about the current engine suggestion.
+    ///
+    /// - `num`: the 'place' of the current suggestions, i.e. `0` for best placement, `4`
+    ///   for 5th best placement.
+    /// - `seq`: the position along the sequence of this suggestion, i.e. `(1, 4)` for the
+    ///   2nd position in a sequence of 4 pieces.
+    /// - `rating`: the engine rating for this sequence.
+    pub fn set_engine_suggestion(&mut self, num: usize, seq: (usize, usize), rating: i64) {
+        let lbl = &mut self.eng_overlay;
+        if seq.1 == 1 {
+            // sequence contains only one placement
+            lbl[0].set(&format!("#{}", num + 1));
+        } else {
+            lbl[0].set(&format!("#{} ({}/{})", num + 1, seq.0 + 1, seq.1));
+        }
+        lbl[1].set(&format!("rating: {}", rating));
+    }
+
+    /// Clears the engine suggestion information.
+    pub fn clear_engine_suggestion(&mut self) {
+        for lbl in self.eng_overlay.iter_mut() {
+            lbl.clear();
+        }
+    }
+
+    /// Sets the text showing the current status of engine process, where `params` is a
+    /// string representing the parameters passed to the engine. If `search` if
+    /// `Some((time, nodes, iters))`, indicates that the engine has processed `nodes`
+    /// total nodes over `iters` iterations in `time` seconds.
+    pub fn set_engine_status(&mut self, params: &str, search: Option<(f64, usize, usize)>) {
+        use std::fmt::Write;
+        let mut text = format!("engine settings: {:?}", params);
+        if let Some((time, nodes, iters)) = search {
+            write!(
+                &mut text,
+                " | computed {} nodes ({} iterations) in {:.3}s",
+                nodes, iters, time
+            )
+            .unwrap();
+        }
+        self.eng_status.set(&text);
+    }
+
+    /// Sets the engine to indicate it is not enabled.
+    pub fn set_engine_disabled(&mut self) {
+        self.eng_matrix.clear();
+        self.eng_ghost.clear();
+        self.clear_engine_suggestion();
+        self.eng_status.set("engine not enabled");
+    }
+
+    /// Renders any labels whos text has recently been updated, and needs to be
+    /// rendered. This function should be called whenever components of the view were
+    /// possibly updated.
+    pub fn render_labels(&mut self, tc: &'r TextureCreator) {
+        let colors = &self.colors;
+        let hud_font = &self.resources.hud_font;
+        let hud_font_bold = &self.resources.hud_font_bold;
+        let hud_font_small = &self.resources.hud_font_small;
+        let hud_font_small_bold = &self.resources.hud_font_small_bold;
+
+        self.motd.render(tc, hud_font_bold, colors.text.0);
+        for lbl in self.stats.iter_mut() {
+            lbl.render(tc, hud_font, colors.text.0);
+        }
+        for (hd, lns) in self.controls.iter_mut() {
+            hd.render(tc, hud_font_bold, colors.text.0);
+            for ln in lns.iter_mut() {
+                ln.render(tc, hud_font, colors.text.0);
             }
         }
-    }
-}
 
-struct SolidCanvasDraw<'dc, 'th, T: RenderTarget>(&'dc mut Canvas<T>, &'th HashMap<char, Color>);
+        self.eng_overlay[0].render(tc, hud_font_small_bold, colors.text.0);
+        self.eng_overlay[1].render(tc, hud_font_small_bold, colors.text.0);
+        self.eng_overlay[2].render(tc, hud_font_small_bold, colors.text.0);
+        self.eng_status.render(tc, hud_font_small, colors.text.1);
 
-impl<'dc, 'th, T: RenderTarget> CellStyle for SolidCanvasDraw<'dc, 'th, T> {
-    fn prepare(&mut self, color: char) -> bool {
-        if let Some(&color) = self.1.get(&color) {
-            self.0.set_draw_color(color);
-            true
+        let piece_rating_color = if self.piece_rating.2 {
+            colors.text.0
         } else {
-            false
-        }
-    }
+            colors.text.1
+        };
+        self.piece_rating.0.render(tc, hud_font, piece_rating_color);
+        self.piece_rating.1.render(tc, hud_font, piece_rating_color);
 
-    fn draw_rect(&mut self, rect: Rect) {
-        self.0.fill_rect(Some(rect)).expect("fill failed");
-    }
-}
-
-struct OutlineCanvasDraw<'dc, 'th, T: RenderTarget>(&'dc mut Canvas<T>, &'th HashMap<char, Color>);
-
-impl<'dc, 'th, T: RenderTarget> CellStyle for OutlineCanvasDraw<'dc, 'th, T> {
-    fn prepare(&mut self, color: char) -> bool {
-        if let Some(&color) = self.1.get(&color) {
-            self.0.set_draw_color(color);
-            true
+        let progress_font = &self.resources.progress_font;
+        let progress_color = if self.progress.1 {
+            colors.good_bad.0
         } else {
-            false
+            colors.text.0
+        };
+        self.progress.0.render(tc, progress_font, progress_color);
+    }
+
+    /// Paints this view onto SDL2 canvas `cv`.
+    pub fn paint(&self, cv: &mut Canvas) {
+        cv.set_draw_color(self.colors.background);
+        cv.clear();
+
+        // draw matrix backgrounds
+        cv.set_draw_color(self.colors.grid_background.0);
+        cv.fill_rect(self.geom.matrix).unwrap();
+        cv.fill_rect(self.geom.eng_matrix).unwrap();
+        // checkerboard
+        cv.set_draw_color(self.colors.grid_background.1);
+        for i in 0..self.ruleset.visible_rows {
+            for j in 0..self.ruleset.cols {
+                if (i + j) % 2 == 0 {
+                    continue;
+                }
+                let (i, j) = (i as u16, j as u16);
+                cv.fill_rect(self.geom.main_cell(i, j)).unwrap();
+                cv.fill_rect(self.geom.eng_cell(i, j)).unwrap();
+            }
         }
-    }
 
-    fn draw_rect(&mut self, rect: Rect) {
-        self.0.draw_rect(rect).expect("outline failed");
-    }
-}
+        // draw matrix cells
+        self.queue.paint(cv, &self.colors, CellStyle::Solid);
+        self.matrix.paint(cv, &self.colors, CellStyle::Solid);
+        self.ghost.paint(cv, &self.colors, CellStyle::Outline);
+        self.piece.paint(cv, &self.colors, CellStyle::Solid);
+        self.eng_matrix.paint(cv, &self.colors, CellStyle::Solid);
+        self.eng_ghost.paint(cv, &self.colors, CellStyle::Outline);
 
-/// Trait for computing cell geometry from a coordinate.
-trait CellGeom {
-    fn cell_rect(&self, coord: (u16, u16)) -> Option<Rect>;
-}
+        // draw left-side HUD labels, which need some extra machinery to calculate their
+        // positions. `group` is the index of the current label group, and `line` is the
+        // line number for the next label.
+        let (mut group, mut line) = (0, 0);
+        self.motd.paint(cv, self.geom.hud(group, line));
+        line += 1;
+        group += 1;
 
-struct MatrixCellGeom<'a>(&'a Geometry, u16);
-impl<'a> CellGeom for MatrixCellGeom<'a> {
-    fn cell_rect(&self, coord: (u16, u16)) -> Option<Rect> {
-        if coord.0 < self.1 {
-            Some(self.0.matrix_cell_rect(coord).into())
-        } else {
-            None
+        for lbl in self.stats.iter() {
+            lbl.paint(cv, self.geom.hud(group, line));
+            line += 1;
         }
+        group += 1;
+
+        for (hd, lns) in self.controls.iter() {
+            hd.paint(cv, self.geom.hud(group, line));
+            line += 1;
+            for ln in lns.iter() {
+                ln.paint(cv, self.geom.hud(group, line));
+                line += 1;
+            }
+            group += 1;
+        }
+
+        // draw other labels
+        let progress = &self.progress.0;
+        progress.paint(cv, self.geom.progress(progress));
+        for (i, lbl) in self.eng_overlay.iter().enumerate() {
+            lbl.paint(cv, self.geom.engine_overlay(i));
+        }
+        self.piece_rating.0.paint(cv, self.geom.piece_rating(0));
+        self.piece_rating.1.paint(cv, self.geom.piece_rating(1));
+        self.eng_status.paint(cv, self.geom.engine_status());
     }
 }
 
-struct NextCellGeom<'a>(&'a Geometry, usize);
-impl<'a> CellGeom for NextCellGeom<'a> {
-    fn cell_rect(&self, coord: (u16, u16)) -> Option<Rect> {
-        Some(self.0.next_cell_rect(self.1, coord).into())
-    }
-}
-
-struct HoldCellGeom<'a>(&'a Geometry);
-impl<'a> CellGeom for HoldCellGeom<'a> {
-    fn cell_rect(&self, coord: (u16, u16)) -> Option<Rect> {
-        Some(self.0.hold_cell_rect(coord).into())
-    }
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////
-// Labels
-
-struct Label<'tx> {
-    buf: String,
-    tmp: String,
-    texture: Option<Texture<'tx>>,
-    width: u32,
-    height: u32,
-    style: TextStyle,
+/// Represents a collection of colored cells to be drawn. Helps save on allocations and
+/// drawing calls.
+struct Cells {
+    rows: u16,
+    rects: HashMap<CellColor, Vec<Rect>>,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-enum TextStyle {
-    Normal,
-    Highlight,
-    Good,
-    Bad,
+enum CellStyle {
+    Solid,
+    Outline,
 }
 
-impl Default for TextStyle {
-    fn default() -> Self {
-        TextStyle::Normal
-    }
-}
-
-fn goodbad(x: i64) -> TextStyle {
-    if x < 0 {
-        TextStyle::Good
-    } else {
-        TextStyle::Bad
-    }
-}
-
-impl<'tx> Label<'tx> {
-    fn new() -> Self {
-        Label {
-            buf: String::with_capacity(80),
-            tmp: String::with_capacity(80),
-            texture: None,
-            width: 0,
-            height: 0,
-            style: TextStyle::Normal,
+impl Cells {
+    /// Construct a new `Cells`. If given, `rows` specifies the max number of rows
+    /// displayed, and cells above that row will not be displayed.
+    fn new(rows: Option<u16>) -> Self {
+        Self {
+            rows: rows.unwrap_or(std::u16::MAX),
+            rects: HashMap::with_capacity(32),
         }
     }
 
     fn clear(&mut self) {
-        self.buf.clear();
-        self.texture = None;
-    }
-
-    fn set(&mut self, style: TextStyle, text: impl std::fmt::Display) {
-        use std::fmt::Write;
-        self.style = style;
-        self.tmp.clear();
-        write!(&mut self.tmp, "{}", text).unwrap();
-        if self.tmp != self.buf {
-            self.buf.clone_from(&self.tmp);
-            self.texture = None;
+        for rs in self.rects.values_mut() {
+            rs.clear();
         }
     }
 
-    fn repaint(
-        &mut self,
-        tc: &'tx TextureCreator,
-        theme: &TextTheme,
-        font: &sdl2::ttf::Font<'tx, 'static>,
-    ) {
-        if self.texture.is_none() && self.buf.len() > 0 {
-            let surf = font
-                .render(&self.buf)
-                .blended(match self.style {
-                    TextStyle::Normal => theme.normal,
-                    TextStyle::Highlight => theme.highlight,
-                    TextStyle::Good => theme.good,
-                    TextStyle::Bad => theme.bad,
-                })
-                .expect("text render failed");
-            let texture = tc
-                .create_texture_from_surface(&surf)
-                .expect("texture creation failed");
-            let query = texture.query();
-            self.width = query.width;
-            self.height = query.height;
-            self.texture = Some(texture);
+    /// Insert cells to be drawn, where `cells` specifies the coordinate and colors of the
+    /// cells, and `geom` computes the rectangle for each cell.
+    fn insert<I, G>(&mut self, cells: I, geom: G)
+    where
+        I: IntoIterator<Item = ((u16, u16), CellColor)>,
+        G: Fn(u16, u16) -> Rect,
+    {
+        for ((i, j), cc) in cells {
+            if i < self.rows {
+                self.rects.entry(cc).or_default().push(geom(i, j));
+            }
         }
     }
 
-    fn draw(&self, (x, y): (i32, i32), dc: &mut Canvas<impl RenderTarget>) {
-        if let Some(tx) = self.texture.as_ref() {
-            let dst = (x, y, self.width, self.height);
-            dc.copy(tx, None, Some(dst.into())).expect("draw failed");
+    /// Paints these cells onto canvas `cv`, using `colors` to deterimne the color of each
+    /// cell, and `style` to determine how the cells are drawn.
+    fn paint(&self, cv: &mut Canvas, colors: &Colors, style: CellStyle) {
+        for (&cc, rects) in self.rects.iter() {
+            if rects.is_empty() {
+                continue;
+            }
+            if let Some(&color) = colors.cell.get(&cc) {
+                cv.set_draw_color(color);
+                for &rect in rects.iter() {
+                    match style {
+                        CellStyle::Solid => cv.fill_rect(rect),
+                        CellStyle::Outline => cv.draw_rect(rect),
+                    }
+                    .unwrap();
+                }
+            }
         }
     }
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////
-// Geometry
+/// Represents a label to be drawn. Helps save on allocations and font rendering
+/// operations.
+struct Label<'a> {
+    text: String,
+    texture: Option<Texture<'a>>,
+    width: u32,
+    height: u32,
+}
 
-#[derive(Default, Clone)]
+impl<'a> Label<'a> {
+    /// Constructs a new empty label.
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+            texture: None,
+            width: 0,
+            height: 0,
+        }
+    }
+
+    /// Clears the text on this label (equivalent to `self.set("");`).
+    fn clear(&mut self) {
+        self.text.clear();
+        self.texture = None;
+        self.width = 0;
+        self.height = 0;
+    }
+
+    /// Sets the label text to the provided string.
+    fn set(&mut self, s: &str) {
+        if s != self.text {
+            self.clear();
+            self.text.push_str(s);
+        }
+    }
+
+    /// Renders the label so that its text will be drawn on the next call to
+    /// `paint`. Returns `true` if the text had to be re-rendered from the given font,
+    /// `false` if not since the text had not changed since the last call to `render()`.
+    fn render(
+        &mut self,
+        tc: &'a TextureCreator,
+        font: &sdl2::ttf::Font<'a, 'static>,
+        color: Color,
+    ) -> bool {
+        if self.texture.is_some() || self.text.is_empty() {
+            return false;
+        }
+        let surf = font
+            .render(&self.text)
+            .blended(color)
+            .expect("text render failed");
+        let texture = tc
+            .create_texture_from_surface(&surf)
+            .expect("texture creation failed");
+        let query = texture.query();
+        self.width = query.width;
+        self.height = query.height;
+        self.texture = Some(texture);
+        true
+    }
+
+    /// Paints this label onto canvas `cv` with top-left origin `(x, y)`.
+    fn paint(&self, cv: &mut Canvas, (x, y): (i32, i32)) {
+        if let Some(texture) = self.texture.as_ref() {
+            let rect = (x, y, self.width, self.height).into();
+            cv.copy(texture, None, Some(rect)).unwrap();
+        }
+    }
+}
+
+/// Caches geometry computations for the on-screen elements.
+#[derive(Clone)]
 struct Geometry {
+    // number of visible rows/cols
     rows: u32,
     cols: u32,
-    cell_size: u32,
-    mat_top: i32,
-    mat_left: i32,
-    hold_left: i32,
-    hold_top: i32,
-    next_top: i32,
-    next_left: i32,
-    next_offset: i32,
-    hud_top: i32,
-    hud_left: i32,
-    hud_offset: i32,
+    // line height for primary font
+    line_height: i32,
+    // line height for small font
+    line_height_small: i32,
+    // text padding for primary font
+    text_pad: i32,
+    // text padding for small font
+    text_pad_small: i32,
+    // position of the bottom of the window
+    bottom: i32,
+    // extent of the main matrix
+    matrix: Rect,
+    // size of main matrix cells
+    cell: u32,
+    // extent of the engine matrix
+    eng_matrix: Rect,
+    // size of engine matrix cells
+    eng_cell: u32,
 }
 
-const PADDING: u32 = 10;
-
 impl Geometry {
-    fn new(rules: &Ruleset, res: &Resources, w: u32, h: u32) -> Self {
-        let cols = rules.cols as u32;
-        let rows = rules.visible_rows as u32;
-
-        let cell_size = std::cmp::min((w - PADDING * 2) / (cols + 10), (h - PADDING * 2) / rows);
-
-        // hold piece
-        let hold_left = PADDING as i32;
-        let hold_top = PADDING as i32;
-
-        // matrix
-        let mat_top = PADDING as i32;
-        let mat_left = hold_left + (cell_size * 5) as i32;
-
-        // next queue
-        let next_top = PADDING as i32;
-        let next_left = mat_left + (cell_size * (cols + 1)) as i32;
-        let next_offset = (cell_size * 3) as i32;
-
-        // hud
-        let hud_top = PADDING as i32;
-        let hud_left = next_left + (cell_size * 5) as i32;
-        let hud_offset = res.hud_font.height() + 2;
-
-        Self {
-            rows,
-            cols,
-            cell_size,
-            mat_top,
-            mat_left,
-            hold_left,
-            hold_top,
-            next_top,
-            next_left,
-            next_offset,
-            hud_top,
-            hud_left,
-            hud_offset,
-        }
+    fn new(rows: u16, cols: u16, win: (u32, u32)) -> Self {
+        let mut geom = Self {
+            // constant
+            rows: rows as u32,
+            cols: cols as u32,
+            // TODO: derive these from Resources
+            line_height: 19,
+            line_height_small: 15,
+            text_pad: 6,
+            text_pad_small: 3,
+            // calculated on every resize
+            bottom: 0,
+            cell: 0,
+            eng_cell: 0,
+            matrix: Rect::new(0, 0, 0, 0),
+            eng_matrix: Rect::new(0, 0, 0, 0),
+        };
+        geom.set(win);
+        geom
     }
 
-    fn matrix_rect(&self) -> (i32, i32, u32, u32) {
-        let x = self.mat_left as i32;
-        let y = self.mat_top as i32;
-        (x, y, self.cell_size * self.cols, self.cell_size * self.rows)
+    fn set(&mut self, (win_w, win_h): (u32, u32)) {
+        self.bottom = win_h as i32;
+        self.cell = (win_h * 3 / 4) / self.rows;
+        self.eng_cell = self.cell / 2;
+
+        let main_w = self.cell * self.cols;
+        let main_h = self.cell * self.rows;
+        let main_x = (win_w as i32 - main_w as i32) / 2;
+        let main_y = (win_h as i32 - main_h as i32) / 2 - self.line_height_small;
+        self.matrix = (main_x, main_y, main_w, main_h).into();
+
+        let eng_w = self.eng_cell * self.cols;
+        let eng_h = self.eng_cell * self.rows;
+        let eng_x = main_x - (self.cell as i32) - eng_w as i32;
+        let eng_y = main_y + main_h as i32 - eng_h as i32;
+        self.eng_matrix = (eng_x, eng_y, eng_w, eng_h).into();
     }
 
-    fn matrix_cell_rect(&self, (row, col): (u16, u16)) -> (i32, i32, u32, u32) {
-        let x = self.mat_left + ((col as u32) * self.cell_size) as i32;
-        let y = self.mat_top + ((self.rows - (row as u32) - 1) * self.cell_size) as i32;
-        (x, y, self.cell_size, self.cell_size)
+    fn cell(&self, x0: i32, y0: i32, size: u32, i: u16, j: u16) -> Rect {
+        Rect::new(
+            x0 + (j as i32) * (size as i32),
+            y0 - ((i + 1) as i32) * (size as i32),
+            size,
+            size,
+        )
     }
 
-    fn hold_cell_rect(&self, (row, col): (u16, u16)) -> (i32, i32, u32, u32) {
-        let x = self.hold_left + ((col as u32) * self.cell_size) as i32;
-        let y = self.hold_top + ((3 - (row as u32) - 1) * self.cell_size) as i32;
-        (x, y, self.cell_size, self.cell_size)
+    fn main_cell(&self, i: u16, j: u16) -> Rect {
+        let (x0, y0) = (self.matrix.left(), self.matrix.bottom());
+        self.cell(x0, y0, self.cell, i, j)
     }
 
-    fn next_cell_rect(&self, i: usize, (row, col): (u16, u16)) -> (i32, i32, u32, u32) {
-        let x = self.next_left + ((col as u32) * self.cell_size) as i32;
-        let y = self.next_top + ((3 - (row as u32)) * self.cell_size) as i32;
-        let y = y + (i as i32) * (self.next_offset as i32);
-        (x, y, self.cell_size, self.cell_size)
+    fn hold_cell(&self, i: u16, j: u16) -> Rect {
+        let x0 = self.matrix.left() - (self.cell as i32) * 5;
+        let y0 = self.matrix.top() + (self.cell as i32) * 3;
+        self.cell(x0, y0, self.cell, i, j)
     }
 
-    fn hud_text_pos(&self, i: usize) -> (i32, i32) {
-        let x = self.hud_left;
-        let y = self.hud_top + (i as i32) * self.hud_offset;
+    fn next_cell(&self, idx: usize, i: u16, j: u16) -> Rect {
+        let x0 = self.matrix.right() + (self.cell as i32);
+        let mut y0 = self.matrix.top();
+        y0 += (idx as i32 + 1) * (self.cell as i32) * 3;
+        self.cell(x0, y0, self.cell, i, j)
+    }
+
+    fn eng_cell(&self, i: u16, j: u16) -> Rect {
+        let (x0, y0) = (self.eng_matrix.left(), self.eng_matrix.bottom());
+        self.cell(x0, y0, self.eng_cell, i, j)
+    }
+
+    fn hud(&self, group: usize, line: usize) -> (i32, i32) {
+        let (x, mut y) = (self.text_pad, self.text_pad);
+        y += (line as i32) * self.line_height;
+        y += (group as i32) * self.line_height;
+        (x, y)
+    }
+
+    fn progress(&self, label: &Label) -> (i32, i32) {
+        let mut x = self.matrix.right() + (self.cell as i32) * 3;
+        let mut y = self.matrix.bottom() - self.cell as i32;
+        let min_dx = (self.cell as i32) * 3 - self.text_pad;
+        x -= std::cmp::min(min_dx, (label.width as i32) / 2);
+        y -= label.height as i32;
+        (x, y)
+    }
+
+    fn piece_rating(&self, line: usize) -> (i32, i32) {
+        let x = self.matrix.left();
+        let mut y = self.matrix.bottom() + self.text_pad;
+        y += (line as i32) * self.line_height;
+        (x, y)
+    }
+
+    fn engine_overlay(&self, line: usize) -> (i32, i32) {
+        let x = self.eng_matrix.left() + self.text_pad_small;
+        let mut y = self.eng_matrix.top() + self.text_pad_small;
+        y += (line as i32) * self.line_height_small;
+        (x, y)
+    }
+
+    fn engine_status(&self) -> (i32, i32) {
+        let x = self.text_pad;
+        let y = self.bottom - self.line_height_small - self.text_pad;
         (x, y)
     }
 }
 
-//////////////////////////////////////////////////////////////////////////////////////////
-// Theme
-
-/// Holds configuration parameters for the theme, particularly the colors of various
-/// objects to be drawn.
-#[derive(Clone, Debug)]
-pub struct Theme {
-    pub background: Color,
-    pub matrix_border: Color,
-    pub cell_colors: HashMap<char, Color>,
-    pub ghost_colors: HashMap<char, Color>,
-    pub text: TextTheme,
+/// Stores the colors to use for a particular theme.
+struct Colors {
+    background: Color,
+    grid_background: (Color, Color),
+    text: (Color, Color),
+    good_bad: (Color, Color),
+    cell: HashMap<CellColor, Color>,
 }
 
-/// Holds configuration for just the text colors.
-#[derive(Clone, Debug)]
-pub struct TextTheme {
-    normal: Color,
-    highlight: Color,
-    good: Color,
-    bad: Color,
-}
-
-impl Default for Theme {
-    fn default() -> Self {
+impl Colors {
+    fn dark_theme() -> Self {
         let fmt_rgb24 = {
             use sdl2::pixels::{PixelFormat, PixelFormatEnum};
             use std::convert::TryFrom;
@@ -626,36 +711,23 @@ impl Default for Theme {
         };
         let rgb24 = |v| Color::from_u32(&fmt_rgb24, v);
 
-        let mut cell_colors = HashMap::new();
-        cell_colors.insert('G', rgb24(0x999999)); // #999
-        cell_colors.insert('H', rgb24(0x666666)); // #666
-        cell_colors.insert('L', rgb24(0xff9900)); // #f90
-        cell_colors.insert('O', rgb24(0xffff00)); // #ff0
-        cell_colors.insert('I', rgb24(0x00ffff)); // #0ff
-        cell_colors.insert('J', rgb24(0x0022ff)); // #00f
-        cell_colors.insert('S', rgb24(0x00ff00)); // #0f0
-        cell_colors.insert('Z', rgb24(0xff0000)); // #f00
-        cell_colors.insert('T', rgb24(0x990099)); // #909
-
-        let mut ghost_colors = cell_colors.clone();
-        for color in ghost_colors.values_mut() {
-            let (r, g, b) = color.rgb();
-            *color = Color::RGBA(r, g, b, 128);
-        }
-
-        let text = TextTheme {
-            normal: rgb24(0x888888),    // #888
-            highlight: rgb24(0xcccccc), // #ccc
-            good: rgb24(0x44aa44),      // #4a4
-            bad: rgb24(0xcc4444),       // #c44
-        };
+        let mut cell = HashMap::new();
+        cell.insert('G', rgb24(0x888888));
+        cell.insert('H', rgb24(0x666666));
+        cell.insert('L', rgb24(0xff9900));
+        cell.insert('O', rgb24(0xffff00));
+        cell.insert('I', rgb24(0x00ffff));
+        cell.insert('J', rgb24(0x0022ff));
+        cell.insert('S', rgb24(0x00ff00));
+        cell.insert('Z', rgb24(0xff0000));
+        cell.insert('T', rgb24(0x990099));
 
         Self {
-            background: rgb24(0x111111),    // #111
-            matrix_border: rgb24(0x333333), // #333
-            cell_colors,
-            ghost_colors,
-            text,
+            background: rgb24(0x2e2e2e),
+            grid_background: (rgb24(0), rgb24(0x222222)),
+            text: (rgb24(0xeeeeee), rgb24(0x888888)),
+            good_bad: (rgb24(0x55ff55), rgb24(0xff3333)),
+            cell,
         }
     }
 }

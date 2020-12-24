@@ -77,6 +77,20 @@ impl std::str::FromStr for Config {
     }
 }
 
+impl std::fmt::Display for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let search_limit = (self.search_limit + 999) / 1_000;
+        write!(f, "{}/", search_limit)?;
+        for (i, v) in self.scoring.to_vec().into_iter().enumerate() {
+            if i > 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{}", v)?;
+        }
+        Ok(())
+    }
+}
+
 // Snapshot, suggestion
 
 #[derive(Clone, Debug)]
@@ -122,6 +136,11 @@ impl AI {
             shtb: Arc::new(srs()),
             rx: None,
         }
+    }
+
+    /// Returns the configuration used to initialize this AI.
+    pub fn config(&self) -> &Config {
+        &self.cfg
     }
 
     /// Starts searching for suggestions from the game state in `snapshot`. Immediately
@@ -297,6 +316,25 @@ mod test {
                     piece_penalty: 4,
                 },
             }
+        );
+    }
+
+    #[test]
+    fn test_display_config() {
+        assert_eq!(
+            format!(
+                "{}",
+                Config {
+                    search_limit: 15_000,
+                    scoring: ScoreParams {
+                        row_factor: 1,
+                        piece_estimate_factor: 2,
+                        i_dependency_factor: 3,
+                        piece_penalty: 4,
+                    },
+                }
+            ),
+            "15/1,2,3,4"
         );
     }
 }
