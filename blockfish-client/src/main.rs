@@ -14,7 +14,7 @@ use blockfish::Config as BFConfig;
 use argh::FromArgs;
 use thiserror::Error;
 
-static VERSION: &'static str = "DEVELOPMENT BUILD";
+static VERSION: &'static str = "v0.7.8";
 
 const DEFAULT_CONFIG_DIR: &str = "./config";
 
