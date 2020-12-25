@@ -149,9 +149,9 @@ impl State {
 
     /// Applies the given placement to this state, modifying the queue and matrix.
     fn place(&mut self, pl: &Place) {
-        pl.shape().blit_to(&mut self.matrix, pl.transform());
+        pl.shape.blit_to(&mut self.matrix, pl.tf);
         self.is_goal = self.matrix.sift_rows();
-        self.pop(pl.did_hold());
+        self.pop(pl.did_hold);
     }
 
     /// Removes a piece from the next queue, or hold slot if `hold` is `true`.

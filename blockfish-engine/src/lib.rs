@@ -1,5 +1,6 @@
 mod ai;
 mod common;
+mod finesse;
 mod matrix;
 mod shape;
 

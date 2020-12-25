@@ -1,4 +1,4 @@
-use crate::{BasicMatrix, Color, Orientation};
+use crate::{BasicMatrix, Color, Input, Orientation};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, ops::RangeInclusive};
 use thiserror::Error;
@@ -117,6 +117,48 @@ impl<'a> ShapeRef<'a> {
             Some(offsets) => &offsets,
             None => &[],
         }
+    }
+
+    /// Try to perform input `Input` to a piece with this shape at transform `tf`. If it
+    /// would successfully move the piece, returns the final transformation. If it would
+    /// collide with `matrix`, returns `None`.
+    pub fn try_input(
+        &self,
+        matrix: &BasicMatrix,
+        tf: Transform,
+        input: Input,
+    ) -> Option<Transform> {
+        // get a list of potential offsets to try (particularly, from the kick table in
+        // case of rotation).
+        let (i0, j0, r0) = tf;
+        let (r, offsets): (Orientation, &[(i16, i16)]) = match input {
+            Input::Left => (r0, &[(0, -1)]),
+            Input::Right => (r0, &[(0, 1)]),
+            Input::CCW => (r0.ccw(), self.kicks(r0, r0.ccw())),
+            Input::CW => (r0.cw(), self.kicks(r0, r0.cw())),
+            _ => {
+                log::error!("invalid input passed to `try_input`");
+                return None;
+            }
+        };
+
+        // run SRS algorithm: find the first valid offset if any.
+        let (i, j) = offsets
+            .iter()
+            .map(|&(i_off, j_off)| (i0 + i_off, j0 + j_off))
+            .find(|&(i, j)| !self.intersects(matrix, (i, j, r)))?;
+
+        Some((i, j, r))
+    }
+
+    /// Drops a piece with this shape and transform `tf` to the ground, returning the new
+    /// transform.
+    pub fn sonic_drop(&self, matrix: &BasicMatrix, tf: Transform) -> Transform {
+        let (mut i, j, r) = tf;
+        while !self.intersects(matrix, (i - 1, j, r)) {
+            i -= 1;
+        }
+        (i, j, r)
     }
 
     /// Returns the matrix and its column/row offset for this shape at orientation `r`.
