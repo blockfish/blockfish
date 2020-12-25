@@ -3,7 +3,7 @@ mod common;
 mod matrix;
 mod shape;
 
-pub use ai::{AIPoll, Config, Snapshot, Suggestion, AI};
+pub use ai::{Analysis, Config, Snapshot, Suggestion, AI};
 pub use common::{Color, Input, Orientation};
 pub use matrix::BasicMatrix;
 

@@ -32,14 +32,17 @@ impl Node {
         }
     }
 
-    /// Returns the index of the `Root` at the base of the search tree associated with
-    /// this node. Currently, the exact sequence of placements leading to a particular
-    /// node is thrown away, except for the first placement, which is identified by this
-    /// root index.
+    /// Returns the index of the first placement in this node's sequence, or `None` if
+    /// this is a root node. In that case, `successor()` should be called, which will
+    /// assign the new node a root_idx, which will stay constant for the remainder of the
+    /// sequence.
     ///
-    /// Returns `None` if this node was initialized with `new()` so it does not have a
-    /// root index. The successors to that node will have a root index which stays
-    /// constant with each successor after it.
+    /// # Why?
+    ///
+    /// `root_idx` is useful for identifying the first placement in a sequence, so that
+    /// placement may be suggested if a node later in the sequence is found to be
+    /// ideal. In the future, `root_idx` will be replaced with a full list of placements
+    /// so that the entire trace may be obtained for a given suggestion.
     pub fn root_idx(&self) -> Option<usize> {
         if self.root_idx < std::u16::MAX {
             Some(self.root_idx as usize)

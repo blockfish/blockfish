@@ -10,15 +10,18 @@ mod dfs;
 use self::{
     a_star::AStar,
     node::{Node, State},
-    place::placements,
+    place::{placements, Place},
 };
 use crate::{
     shape::{srs, ShapeTable},
     BasicMatrix, Color, Input,
 };
+
+use place::Placements;
 use std::{
+    cell::Cell,
     convert::TryInto,
-    sync::{mpsc, Arc},
+    sync::{atomic, mpsc, Arc},
 };
 use thiserror::Error;
 
@@ -91,16 +94,16 @@ impl std::fmt::Display for Config {
     }
 }
 
-// Snapshot, suggestion
+// Input / output types
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Snapshot {
     pub hold: Option<Color>,
     pub queue: Vec<Color>,
     pub matrix: BasicMatrix,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Suggestion {
     pub inputs: Vec<Input>,
     pub score: i64,
@@ -108,189 +111,195 @@ pub struct Suggestion {
 
 // AI
 
-/// An AI process which can be used to suggest moves from a snapshot, or evaluate a game
-/// state.
+/// An instance of the Blockfish AI. Holds engine configuration and can be used to spawn
+/// an analysis.
 pub struct AI {
-    cfg: Config,
-    shtb: Arc<ShapeTable>,
-    rx: Option<mpsc::Receiver<Suggestion>>,
+    config: Config,
+    shape_table: Arc<ShapeTable>,
 }
 
-/// A result from polling the AI for suggestions.
-#[derive(Debug)]
-pub enum AIPoll {
-    /// A new solution was suggested (or the score of an earlier suggestion improved).
-    Suggest(Suggestion),
-    /// The AI is still running but no new suggestions were found.
-    Pending,
-    /// The AI process ended and no new suggestions will be returned until it is started
-    /// again.
-    Done,
+/// A handle to a blockfish analysis running in the background. Can be polled for new
+/// suggestions from the engine. Particularly, an `Analysis` is an `Iterator` over
+/// suggestions.
+pub struct Analysis {
+    // recieve end of communication channel with the worker thread.
+    rx: Option<Rx>,
+    // may hold an incoming message if a nonblocking poll was performed.
+    inbox: Cell<Option<Msg>>,
+    // `root_inputs[i]` holds the input list for placement sequences identified by root
+    // index `i`. this list is populated when the analysis starts by a finesse pass over
+    // all the initial valid placements.
+    root_inputs: Vec<Vec<Input>>,
+    // holds statistics about the worker thread, after the thread finishes
+    stats: AtomicStats,
 }
+
+// Message type passed from worker threads to Analysis's.
+struct Msg {
+    score: i64,
+    root_idx: usize,
+}
+
+type Rx = mpsc::Receiver<Msg>;
+type Tx = mpsc::SyncSender<Msg>;
+type AtomicStats = Arc<(atomic::AtomicBool, atomic::AtomicUsize, atomic::AtomicUsize)>;
 
 impl AI {
-    /// Constructs a new AI from the configuration `cfg`.
-    pub fn new(cfg: Config) -> Self {
-        AI {
-            cfg,
-            shtb: Arc::new(srs()),
-            rx: None,
+    /// Constructs a new Blockfish AI instance with the given engine configuration.
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            shape_table: srs().into(),
         }
     }
 
-    /// Returns the configuration used to initialize this AI.
-    pub fn config(&self) -> &Config {
-        &self.cfg
+    pub fn config(&self) -> Config {
+        self.config.clone()
     }
 
-    /// Starts searching for suggestions from the game state in `snapshot`. Immediately
-    /// cancels whatever search was happening prior.
-    pub fn start(&mut self, snapshot: Snapshot) {
-        self.rx = None;
-        let cfg = self.cfg.clone();
-        let shtb = self.shtb.clone();
+    /// Begins a new analysis of `snapshot`, returning a handle to it.
+    pub fn analyze(&mut self, snapshot: Snapshot) -> Analysis {
+        Analysis::start(
+            self.config.clone(),
+            self.shape_table.clone(),
+            snapshot.into(),
+        )
+    }
+}
 
-        let (tx, rx) = mpsc::sync_channel(100);
-        std::thread::spawn(move || {
-            let init_state = snapshot.into();
-            let mut roots = placements(&shtb, &init_state)
-                .map(|place| Root::new(place.into_inputs()))
-                .collect::<Vec<_>>();
+impl Analysis {
+    /// Constructs a new `Analysis` with given channel reciever and initial placements.
+    fn new(rx: Rx, roots: Placements) -> Self {
+        Self {
+            rx: Some(rx),
+            inbox: Cell::new(None),
+            root_inputs: roots.map(Place::into_inputs).collect(),
+            stats: Arc::new((false.into(), 0.into(), 0.into())),
+        }
+    }
 
-            let mut best = std::i64::MAX;
+    /// Starts an analysis.
+    fn start(cfg: Config, shtb: Arc<ShapeTable>, init_state: State) -> Self {
+        let (tx, rx) = mpsc::sync_channel(1024);
+        let analysis = Analysis::new(rx, placements(&shtb, &init_state));
+        let stats = analysis.stats.clone();
+        std::thread::spawn(move || Analysis::work(cfg, shtb, Node::new(init_state), tx, stats));
+        analysis
+    }
 
-            let mut worker = Worker::new(&shtb, &cfg.scoring, cfg.search_limit, init_state);
-            let mut iterations = 0;
-            while let Some((root_idx, depth, score)) = worker.step() {
-                iterations += 1;
+    /// Performs the work of an analysis, starting with root node `Node`. New potential
+    /// suggestions are pushed to channel `tx`.
+    fn work(cfg: Config, shtb: Arc<ShapeTable>, root: Node, tx: Tx, stats: AtomicStats) {
+        assert!(root.root_idx().is_none()); // must be a root node
+        let mut search = AStar::new(&shtb, &cfg.scoring, cfg.search_limit, root);
+        let mut root_score = vec![];
+        let mut best = std::i64::MAX;
+        let mut iters = 0;
+        while let Some(node) = search.next() {
+            iters += 1;
 
-                let root = &mut roots[root_idx];
-                let prev_score = root.best_score;
-                if !root.update(depth, score) {
-                    // TODO: send periodic "heartbeats" thru tx, with engine statistics
-                    continue;
+            if let Some(root_idx) = node.root_idx() {
+                if root_score.len() <= root_idx {
+                    root_score.resize(root_idx + 1, std::i64::MAX);
                 }
 
-                if score <= best {
+                let score = node.score();
+                if score < root_score[root_idx] {
+                    root_score[root_idx] = score;
+                    if tx.send(Msg { root_idx, score }).is_err() {
+                        log::warn!("analysis dropped; quitting early");
+                        break;
+                    }
+                }
+
+                if score < best {
                     log::trace!(
-                        "{} root {} @ depth {}, score => {} (iteration #{})",
-                        if root.best_score < prev_score {
-                            "improved"
-                        } else {
-                            "DEGRADED"
-                        },
+                        "root {} @ depth {}, score => {} (iteration #{})",
                         root_idx,
-                        root.furthest_depth,
-                        root.best_score,
-                        iterations
+                        node.depth(),
+                        score,
+                        iters,
                     );
                     best = score;
                 }
-
-                if tx.send(root.to_suggestion()).is_err() {
-                    log::warn!("ai channel dropped; stopping early");
-                    return;
-                }
             }
-            log::info!("ran {} iterations of A*", iterations);
-        });
 
-        self.rx = Some(rx);
-    }
-
-    /// Returns the AI's static evaluation score of the game state in `snapshot`.
-    pub fn static_eval(&self, snapshot: &Snapshot) -> i64 {
-        score::score(&self.cfg.scoring, &snapshot.matrix)
-    }
-
-    /// Polls the AI to see if it has made any progress in finding moves.
-    pub fn poll(&mut self) -> AIPoll {
-        let rx = match self.rx.as_mut() {
-            Some(rx) => rx,
-            None => return AIPoll::Done,
-        };
-        match rx.try_recv() {
-            Ok(sugg) => AIPoll::Suggest(sugg),
-            Err(mpsc::TryRecvError::Empty) => AIPoll::Pending,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.rx = None;
-                AIPoll::Done
+            if search.node_count() >= cfg.search_limit {
+                break;
             }
         }
+
+        log::info!("ran {} iterations of A*", iters);
+        let nodes = search.node_count();
+        stats.1.store(nodes, atomic::Ordering::Release);
+        stats.2.store(iters, atomic::Ordering::Release);
+        stats.0.store(true, atomic::Ordering::Release);
+        std::mem::drop(tx);
     }
 
-    /// Returns an interator over all incoming suggestions from the AI, until it completes.
-    pub fn into_iter(mut self) -> impl Iterator<Item = Suggestion> {
-        self.rx.take().into_iter().flatten()
-    }
-}
-
-struct Worker<'s> {
-    node_limit: usize,
-    search: AStar<'s>,
-}
-
-impl<'s> Worker<'s> {
-    fn new(
-        shape_table: &'s ShapeTable,
-        scoring: &'s ScoreParams,
-        node_limit: usize,
-        state0: State,
-    ) -> Self {
-        let search = AStar::new(shape_table, scoring, node_limit, Node::new(state0));
-        Self { search, node_limit }
-    }
-
-    fn step(&mut self) -> Option<(usize, usize, i64)> {
-        loop {
-            if self.search.node_count() > self.node_limit {
-                return None;
-            }
-
-            let node = self.search.next()?;
-            if let Some(idx) = node.root_idx() {
-                return Some((idx, node.depth(), node.score()));
-            }
-        }
-    }
-}
-
-/// Roots are updated when a new best sequence is found, and used to suggest the series of
-/// inputs to make the first placement in that sequence.
-struct Root {
-    furthest_depth: isize,
-    best_score: i64,
-    inputs: Vec<Input>,
-}
-
-impl Root {
-    fn new(inputs: impl IntoIterator<Item = Input>) -> Self {
-        Self {
-            furthest_depth: -1,
-            best_score: std::i64::MAX,
-            inputs: inputs.into_iter().collect(),
-        }
-    }
-
-    /// Returns `true` if the given rating improves this root's score.
-    fn update(&mut self, depth: usize, score: i64) -> bool {
-        let depth = depth as isize;
-        if depth < self.furthest_depth || score >= self.best_score {
+    /// Returns `true` if calling `next()` would block while waiting for the next
+    /// suggestion, or `false` if `next()` will immediately return a result.  When the AI
+    /// process is finished, this function will always return `false`.
+    pub fn would_block(&self) -> bool {
+        if let Some(msg) = self.inbox.take() {
+            self.inbox.set(Some(msg));
             return false;
         }
-        self.furthest_depth = depth;
-        self.best_score = score;
-        true
+        let rx = match self.rx.as_ref() {
+            Some(rx) => rx,
+            None => return false,
+        };
+        match rx.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => false,
+            Ok(msg) => {
+                self.inbox.set(Some(msg));
+                false
+            }
+        }
     }
 
-    fn to_suggestion(&self) -> Suggestion {
-        assert!(self.best_score != std::i64::MAX);
-        Suggestion {
-            score: self.best_score,
-            inputs: self.inputs.clone(),
+    /// If the worker process has finished (as indicated by `next()` returning `None`),
+    /// returns `Some((node_count, iterations))`. Otherwise returns `None`.
+    pub fn stats(&self) -> Option<(usize, usize)> {
+        if self.stats.0.load(atomic::Ordering::Acquire) {
+            let node_count = self.stats.1.load(atomic::Ordering::Acquire);
+            let iters = self.stats.2.load(atomic::Ordering::Acquire);
+            Some((node_count, iters))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the next upcoming `Msg`, or `None` if the worker thread has completed.
+    fn next_msg(&mut self) -> Option<Msg> {
+        if let Some(m) = self.inbox.take() {
+            return Some(m);
+        }
+        let rx = match self.rx.as_ref() {
+            Some(rx) => rx,
+            None => return None,
+        };
+        match rx.recv() {
+            Err(mpsc::RecvError) => {
+                self.rx = None;
+                None
+            }
+            Ok(m) => Some(m),
         }
     }
 }
+
+impl Iterator for Analysis {
+    type Item = Suggestion;
+    fn next(&mut self) -> Option<Suggestion> {
+        let Msg { score, root_idx } = self.next_msg()?;
+        let inputs = self.root_inputs[root_idx].clone();
+        Some(Suggestion { score, inputs })
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod test {
@@ -336,5 +345,68 @@ mod test {
             ),
             "15/1,2,3,4"
         );
+    }
+
+    #[test]
+    fn test_analysis_would_block() {
+        let (tx, rx) = mpsc::sync_channel(0);
+        let mut analysis = Analysis::new(rx, Placements::new(&srs()));
+        analysis.root_inputs.push(vec![]);
+        assert!(analysis.would_block());
+        std::mem::drop(tx);
+        assert!(!analysis.would_block());
+    }
+
+    #[test]
+    fn test_analysis_next() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let mut analysis = Analysis::new(rx, Placements::new(&srs()));
+        analysis.root_inputs.push(vec![Input::Left, Input::Right]);
+        analysis.root_inputs.push(vec![Input::CW, Input::CCW]);
+        assert!(analysis.would_block());
+
+        let m = Msg {
+            root_idx: 0,
+            score: 5,
+        };
+        tx.send(m).unwrap();
+        assert!(!analysis.would_block());
+        assert_eq!(
+            analysis.next(),
+            Some(Suggestion {
+                score: 5,
+                inputs: vec![Input::Left, Input::Right],
+            })
+        );
+        assert!(analysis.would_block());
+
+        let m = Msg {
+            root_idx: 1,
+            score: 8,
+        };
+        tx.send(m).unwrap();
+        assert_eq!(
+            analysis.next(),
+            Some(Suggestion {
+                score: 8,
+                inputs: vec![Input::CW, Input::CCW],
+            })
+        );
+
+        std::mem::drop(tx);
+        assert_eq!(analysis.next(), None);
+        assert_eq!(analysis.next(), None);
+    }
+
+    #[test]
+    fn test_analysis_statistics() {
+        let (_, rx) = mpsc::sync_channel(0);
+        let analysis = Analysis::new(rx, Placements::new(&srs()));
+        assert_eq!(analysis.stats(), None);
+        let stats = analysis.stats.clone();
+        stats.1.store(500, atomic::Ordering::Release);
+        stats.2.store(123, atomic::Ordering::Release);
+        stats.0.store(true, atomic::Ordering::Release);
+        assert_eq!(analysis.stats(), Some((500, 123)));
     }
 }

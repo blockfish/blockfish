@@ -297,7 +297,7 @@ impl<'r> View<'r> {
         if let Some((time, nodes, iters)) = search {
             write!(
                 &mut text,
-                " | computed {} nodes ({} iterations) in {:.3}s",
+                " [{} nodes ({} iterations) in {:.3}s]",
                 nodes, iters, time
             )
             .unwrap();

@@ -14,7 +14,7 @@ pub struct Controller<'v> {
     undo_list: Vec<(Stacker, Progress)>,
     progress: Progress,
     ai_config: BFConfig,
-    engine: Option<Box<Engine>>,
+    engine: Option<Engine>,
 }
 
 impl<'v> Controller<'v> {
@@ -97,8 +97,7 @@ impl<'v> Controller<'v> {
     /// Ends the previous engine process and starts an analysis of the current stacker
     /// state.
     fn consult_engine(&mut self) {
-        let eng = Engine::new(self.ai_config.clone(), self.stacker.clone());
-        self.engine = Some(Box::new(eng));
+        self.engine = Some(Engine::new(self.ai_config.clone(), self.stacker.clone()));
     }
 
     /// Polls the engine process for any updates to its progress.
@@ -115,7 +114,9 @@ impl<'v> Controller<'v> {
 
     /// Save the current state to the undo list.
     fn undo_save(&mut self) {
-        self.undo_list.push((self.stacker.clone(), self.progress.clone()));
+        let stacker = self.stacker.clone();
+        let progress = self.progress.clone();
+        self.undo_list.push((stacker, progress));
     }
 
     /// Restore the current state from the undo list.
@@ -261,12 +262,14 @@ impl Progress {
 /// Holds a handle to a Blockfish AI process, the top suggestions produced by that
 /// process, and the current suggestion being selected by the user.
 struct Engine {
-    ai: blockfish::AI,
+    start_time: std::time::Instant,
+    params: String,
     source: Stacker,
     source_frozen: Stacker,
+    ai: Option<blockfish::Analysis>,
     suggestions: Vec<blockfish::Suggestion>,
     selected: Option<(usize, Stacker)>,
-    done: bool,
+    stats: Option<(f64, usize, usize)>,
 }
 
 // TODO: make this dynamic?
@@ -276,26 +279,28 @@ impl Engine {
     /// Constructs a new `Engine` by starting a new Blockfish process with configuration
     /// parameters `config`, starting at the stacker state `source`.
     fn new(config: BFConfig, source: Stacker) -> Self {
-        let mut ai = blockfish::AI::new(config);
-        if let Some(snapshot) = source.snapshot() {
-            ai.start(snapshot);
-        }
+        let params = format!("{}", config);
         let mut source_frozen = source.clone();
         source_frozen.freeze();
         Self {
-            ai,
-            source,
-            source_frozen,
+            start_time: std::time::Instant::now(),
+            ai: match source.snapshot() {
+                Some(ss) => Some(blockfish::AI::new(config).analyze(ss)),
+                None => None,
+            },
             suggestions: vec![],
             selected: None,
-            done: false,
+            stats: None,
+            params,
+            source,
+            source_frozen,
         }
     }
 
     /// Updates `view` to show the current state of the engine process, and the selected
     /// suggestion.
     fn update_view(&self, view: &mut View) {
-        view.set_engine_status(&format!("{}", self.ai.config()), None);
+        view.set_engine_status(&self.params, self.stats);
 
         // TODO: partial updates for the engine matrix
         view.clear_engine_piece();
@@ -306,7 +311,7 @@ impl Engine {
             if let Some((ty, _, j, r, i)) = stacker.current_piece() {
                 view.set_engine_piece(ty, i, j, r);
             }
-            if self.done {
+            if self.finished() {
                 let num = *num;
                 let seq = (0, 1);
                 let score = self.suggestions[num].score;
@@ -338,24 +343,34 @@ impl Engine {
         self.select(0);
     }
 
+    fn finished(&self) -> bool {
+        self.ai.is_none()
+    }
+
     /// Polls the Blockfish process, returning `true` if the suggestions were updated as a
     /// result.
     fn poll(&mut self) -> bool {
+        let mut ai = match self.ai.take() {
+            Some(ai) => ai,
+            None => return false,
+        };
         let mut did_change = false;
-        while !self.done {
-            use blockfish::AIPoll;
-            match self.ai.poll() {
-                AIPoll::Pending => break,
-                AIPoll::Done => {
-                    did_change = true;
-                    self.done = true;
-                }
-                AIPoll::Suggest(sugg) => {
-                    did_change = true;
+        while !ai.would_block() {
+            match ai.next() {
+                Some(sugg) => {
                     self.insert(sugg);
+                    did_change = true;
+                }
+                None => {
+                    let time = std::time::Instant::now() - self.start_time;
+                    if let Some((nodes, iters)) = ai.stats() {
+                        self.stats = Some((time.as_secs_f64(), nodes, iters));
+                    }
+                    return true;
                 }
             }
         }
+        self.ai = Some(ai);
         did_change
     }
 
@@ -376,7 +391,7 @@ impl Engine {
     /// Returns the stacker state obtained by applying the selected suggestion. Returns
     /// `None` if there are no valid suggestions to go to.
     fn go_to_selection(&self) -> Option<Stacker> {
-        if !self.done {
+        if !self.finished() {
             None
         } else {
             if let Some((idx, _)) = self.selected {
