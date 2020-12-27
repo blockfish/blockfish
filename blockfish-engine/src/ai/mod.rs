@@ -3,10 +3,6 @@ mod node;
 mod place;
 mod score;
 
-#[cfg(test)]
-#[allow(unused)]
-mod dfs;
-
 use self::{
     a_star::AStar,
     node::{Node, State},
@@ -109,6 +105,29 @@ pub struct Suggestion {
     pub score: i64,
 }
 
+impl Suggestion {
+    /// Returns the max depth of this suggestion (number of pieces placed).
+    pub fn depth(&self) -> usize {
+        self.inputs.iter().filter(|&&inp| inp == Input::HD).count()
+    }
+
+    /// Returns the initial inputs up to the given depth; that is, the number of `HD`'s in
+    /// the result will be less than or equal to the depth. Particularly, if `depth` is
+    /// `0` it will return all the inputs before the first drop.
+    pub fn inputs_prefix<'a>(&'a self, depth: usize) -> impl Iterator<Item = Input> + 'a {
+        self.inputs.iter().scan(0, move |n, &inp| {
+            if inp == Input::HD {
+                if *n >= depth {
+                    return None;
+                } else {
+                    *n += 1;
+                }
+            }
+            Some(inp)
+        })
+    }
+}
+
 // AI
 
 /// An instance of the Blockfish AI. Holds engine configuration and can be used to spawn
@@ -126,18 +145,21 @@ pub struct Analysis {
     rx: Rx,
     // may hold an incoming message if a nonblocking poll was performed.
     inbox: Cell<Option<Msg>>,
-    // `root_inputs[i]` holds the input list for placement sequences identified by root
-    // index `i`. this list is populated when the analysis starts by a finesse pass over
-    // all the initial valid placements.
-    root_inputs: Vec<Vec<Input>>,
     // holds statistics about the worker thread, after the thread finishes
     stats: AtomicStats,
+    // length to truncate traces before computing inputs
+    trace_max_len: usize,
+    // function to compute inputs for a trace
+    get_trace_inputs: Box<TraceInputsFn>,
 }
 
+type TraceInputsFn = dyn FnMut(&[usize], &mut Vec<Input>);
+
 // Message type passed from worker threads to Analysis's.
+#[derive(Clone, Debug)]
 struct Msg {
     score: i64,
-    root_idx: usize,
+    trace: Vec<usize>,
 }
 
 type Rx = mpsc::Receiver<Msg>;
@@ -169,44 +191,32 @@ impl AI {
 
 impl Analysis {
     /// Constructs a new `Analysis` that communicates with a worker thread via `rx`.
-    fn new(rx: Rx) -> Self {
+    fn new<F>(rx: Rx, f: F) -> Self
+    where
+        F: FnMut(&[usize], &mut Vec<Input>) + 'static,
+    {
         Self {
             rx,
             inbox: Cell::new(None),
-            root_inputs: Vec::with_capacity(128),
             stats: Arc::new((false.into(), 0.into(), 0.into())),
-        }
-    }
-
-    /// Initializes info about all the root placements coming from initial state
-    /// `state`. Particularly, computes the input sequences to make those placements.
-    fn init_roots(&mut self, shtb: &ShapeTable, state: &State) {
-        let mut ffind = finesse::FinesseFinder::new();
-        for place in placements(&shtb, &state) {
-            let mut inputs = ffind
-                .find(state.matrix(), place.shape, place.normal())
-                .unwrap();
-            if place.did_hold {
-                inputs.insert(0, Input::Hold);
-            }
-            self.root_inputs.push(inputs);
+            trace_max_len: std::usize::MAX,
+            get_trace_inputs: Box::new(f),
         }
     }
 
     /// Starts an analysis of initial state `init_state`, returning a handle to it.
-    fn start(cfg: Config, shtb: Arc<ShapeTable>, init_state: State) -> Self {
+    fn start(cfg: Config, shtb: Arc<ShapeTable>, init: State) -> Self {
         let (tx, rx) = mpsc::sync_channel(1024);
-        let mut analysis = Analysis::new(rx);
-        analysis.init_roots(&shtb, &init_state);
+        let analysis = Analysis::new(rx, reconstruct_traces_from(shtb.clone(), init.clone()));
         let stats = analysis.stats.clone();
-        std::thread::spawn(move || Analysis::work(cfg, shtb, Node::new(init_state), tx, stats));
+        std::thread::spawn(move || Analysis::work(cfg, shtb, Node::new(init), tx, stats));
         analysis
     }
 
     /// Performs the work of an analysis, starting with root node `Node`. New potential
     /// suggestions are pushed to channel `tx`, and final stats are updated to `stats`.
     fn work(cfg: Config, shtb: Arc<ShapeTable>, root: Node, tx: Tx, stats: AtomicStats) {
-        assert!(root.root_idx().is_none()); // must be a root node
+        assert!(root.depth() == 0);
         let mut search = AStar::new(&shtb, &cfg.scoring, cfg.search_limit, root);
         let mut root_score = vec![];
         let mut best = std::i64::MAX;
@@ -214,9 +224,7 @@ impl Analysis {
         while let Some(node) = search.next() {
             iters += 1;
 
-            // NOTE: `root_idx()` returns `None` on first iterations since its the root
-            // node.
-            let root_idx = match node.root_idx() {
+            let root_idx = match node.trace().nth(0) {
                 Some(idx) => idx,
                 None => continue,
             };
@@ -227,7 +235,9 @@ impl Analysis {
             let score = node.score();
             if score < root_score[root_idx] {
                 root_score[root_idx] = score;
-                if tx.send(Msg { root_idx, score }).is_err() {
+
+                let trace = node.trace().collect();
+                if tx.send(Msg { score, trace }).is_err() {
                     log::warn!("analysis dropped; quitting early");
                     break;
                 }
@@ -257,6 +267,14 @@ impl Analysis {
         std::mem::drop(tx);
     }
 
+    /// Computes the list of inputs to perform the sequence given by `root_idx`.
+    fn inputs(&mut self, trace: &[usize]) -> Vec<Input> {
+        let len = std::cmp::min(trace.len(), self.trace_max_len);
+        let mut inputs = Vec::with_capacity(len * 8);
+        (self.get_trace_inputs)(&trace[..len], &mut inputs);
+        inputs
+    }
+
     /// If the worker process has finished (as indicated by `next()` returning `None`),
     /// returns `Some((node_count, iterations))`. Otherwise returns `None`.
     pub fn stats(&self) -> Option<(usize, usize)> {
@@ -283,6 +301,18 @@ impl Analysis {
         self.inbox.set(Some(msg));
         false
     }
+
+    /// Sets the maximum length of traces returned in suggestions. For instance, if `n` is
+    /// `1` then suggestions will only contain inputs for the first piece in their
+    /// sequence. If `n` is `0` then no inputs will returned, only the score will be
+    /// computed.
+    ///
+    /// This function does not affect the actual search depth performed by the analysis,
+    /// only the list of inputs in resulting suggestions. It is recommended to set this to
+    /// `1` for non-interactive where you are performing inputs one at a time.
+    pub fn set_trace_max_len(&mut self, n: usize) {
+        self.trace_max_len = n;
+    }
 }
 
 impl Iterator for Analysis {
@@ -297,8 +327,39 @@ impl Iterator for Analysis {
         };
         Some(Suggestion {
             score: msg.score,
-            inputs: self.root_inputs[msg.root_idx].clone(),
+            inputs: self.inputs(&msg.trace),
         })
+    }
+}
+
+fn reconstruct_traces_from(
+    shtb: Arc<ShapeTable>,
+    init_state: State,
+) -> impl FnMut(&[usize], &mut Vec<Input>) {
+    let mut ffind = finesse::FinesseFinder::new();
+    move |trace, inputs| {
+        let mut state = init_state.clone();
+        for &idx in trace {
+            // get the same placement by its index
+            let pl = placements(&shtb, &state)
+                .nth(idx)
+                .expect("root_idx out of bounds");
+
+            // compute inputs for this placements (via ffind)
+            if pl.did_hold {
+                inputs.push(Input::Hold);
+            }
+            inputs.extend(
+                // TODO: ffind takes an out-parameter
+                ffind
+                    .find(state.matrix(), pl.shape, pl.normal())
+                    .expect("finesse not found"),
+            );
+            inputs.push(Input::HD);
+
+            // apply the placement
+            state.place(&pl);
+        }
     }
 }
 
@@ -351,9 +412,54 @@ mod test {
     }
 
     #[test]
+    fn test_suggestion_depth() {
+        use Input::*;
+        let sugg = Suggestion {
+            inputs: vec![Left, Left, CW, HD, Hold, Left, HD, Right, Right, HD],
+            score: 1234,
+        };
+        assert_eq!(sugg.depth(), 3);
+        let sugg = Suggestion {
+            inputs: vec![Left, Left, CW, HD],
+            score: 1234,
+        };
+        assert_eq!(sugg.depth(), 1);
+    }
+
+    #[test]
+    fn test_suggestion_inputs_prefix() {
+        use Input::*;
+        let sugg = Suggestion {
+            inputs: vec![Left, Left, CW, HD, Hold, Left, HD, Right, Right, HD],
+            score: 1234,
+        };
+        assert_eq!(sugg.inputs_prefix(0).collect::<Vec<_>>(), [Left, Left, CW]);
+        assert_eq!(
+            sugg.inputs_prefix(1).collect::<Vec<_>>(),
+            [Left, Left, CW, HD, Hold, Left]
+        );
+        assert_eq!(
+            sugg.inputs_prefix(2).collect::<Vec<_>>(),
+            [Left, Left, CW, HD, Hold, Left, HD, Right, Right]
+        );
+        assert_eq!(
+            sugg.inputs_prefix(3).collect::<Vec<_>>(),
+            [Left, Left, CW, HD, Hold, Left, HD, Right, Right, HD]
+        );
+        assert_eq!(
+            sugg.inputs_prefix(4).collect::<Vec<_>>(),
+            [Left, Left, CW, HD, Hold, Left, HD, Right, Right, HD]
+        );
+    }
+
+    fn spam_hd_traces(trace: &[usize], inputs: &mut Vec<Input>) {
+        inputs.extend(trace.iter().map(|_| Input::HD));
+    }
+
+    #[test]
     fn test_analysis_would_block() {
         let (tx, rx) = mpsc::sync_channel(0);
-        let analysis = Analysis::new(rx);
+        let analysis = Analysis::new(rx, spam_hd_traces);
         assert!(analysis.would_block());
         std::mem::drop(tx);
         assert!(!analysis.would_block());
@@ -362,13 +468,11 @@ mod test {
     #[test]
     fn test_analysis_next() {
         let (tx, rx) = mpsc::sync_channel(1);
-        let mut analysis = Analysis::new(rx);
-        analysis.root_inputs.push(vec![Input::Left, Input::Right]);
-        analysis.root_inputs.push(vec![Input::CW, Input::CCW]);
+        let mut analysis = Analysis::new(rx, spam_hd_traces);
         assert!(analysis.would_block());
 
         let m = Msg {
-            root_idx: 0,
+            trace: vec![1, 2],
             score: 5,
         };
         tx.send(m).unwrap();
@@ -377,13 +481,13 @@ mod test {
             analysis.next(),
             Some(Suggestion {
                 score: 5,
-                inputs: vec![Input::Left, Input::Right],
+                inputs: vec![Input::HD, Input::HD],
             })
         );
         assert!(analysis.would_block());
 
         let m = Msg {
-            root_idx: 1,
+            trace: vec![1, 2, 3],
             score: 8,
         };
         tx.send(m).unwrap();
@@ -391,7 +495,7 @@ mod test {
             analysis.next(),
             Some(Suggestion {
                 score: 8,
-                inputs: vec![Input::CW, Input::CCW],
+                inputs: vec![Input::HD; 3],
             })
         );
 
@@ -401,9 +505,24 @@ mod test {
     }
 
     #[test]
+    fn test_analysis_trace_max_len() {
+        let msg = Msg {
+            trace: vec![0; 100],
+            score: 8,
+        };
+        let (tx, rx) = mpsc::sync_channel(1);
+        let mut analysis = Analysis::new(rx, spam_hd_traces);
+        tx.send(msg.clone()).unwrap();
+        assert_eq!(analysis.next().unwrap().inputs, [Input::HD; 100]);
+        tx.send(msg.clone()).unwrap();
+        analysis.set_trace_max_len(5);
+        assert_eq!(analysis.next().unwrap().inputs, [Input::HD; 5]);
+    }
+
+    #[test]
     fn test_analysis_statistics() {
         let (_, rx) = mpsc::sync_channel(0);
-        let analysis = Analysis::new(rx);
+        let analysis = Analysis::new(rx, spam_hd_traces);
         assert_eq!(analysis.stats(), None);
         let stats = analysis.stats.clone();
         stats.1.store(500, atomic::Ordering::Release);

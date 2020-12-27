@@ -62,8 +62,8 @@ impl<'r> View<'r> {
             controls: [(hd0, vec![]), (hd1, vec![])],
             progress: (Label::new(), false),
             piece_rating: (Label::new(), Label::new(), true),
-            eng_overlay: [Label::new(), Label::new(), Label::new()],
             eng_status: Label::new(),
+            eng_overlay: [Label::new(), Label::new(), Label::new()],
             motd,
         })
     }
@@ -105,15 +105,15 @@ impl<'r> View<'r> {
         game_ctrls[5].set(&label_text("reset:        ", reset));
 
         let toggle = &[Action::Engine(Toggle)];
-        // let step = &[Action::Engine(StepForward), Action::Engine(StepBackward)];
         let switch = &[Action::Engine(Next), Action::Engine(Prev)];
+        let step = &[Action::Engine(StepForward), Action::Engine(StepBackward)];
         let go_to = &[Action::Engine(Goto)];
         let eng_ctrls = &mut self.controls[1].1;
-        eng_ctrls.resize_with(3, Label::new);
+        eng_ctrls.resize_with(4, Label::new);
         eng_ctrls[0].set(&label_text("toggle:       ", toggle));
-        // eng_ctrls[1].set(&label_text("step sugg:    ", step));
         eng_ctrls[1].set(&label_text("switch sugg:  ", switch));
-        eng_ctrls[2].set(&label_text("go to sugg:   ", go_to));
+        eng_ctrls[2].set(&label_text("step sugg:    ", step));
+        eng_ctrls[3].set(&label_text("go to sugg:   ", go_to));
     }
 
     /// Sets the next previews to contain each piece type in `previews`, and the hold
@@ -264,20 +264,23 @@ impl<'r> View<'r> {
 
     /// Sets the information about the current engine suggestion.
     ///
-    /// - `num`: the 'place' of the current suggestions, i.e. `0` for best placement, `4`
-    ///   for 5th best placement.
-    /// - `seq`: the position along the sequence of this suggestion, i.e. `(1, 4)` for the
-    ///   2nd position in a sequence of 4 pieces.
-    /// - `rating`: the engine rating for this sequence.
-    pub fn set_engine_suggestion(&mut self, num: usize, seq: (usize, usize), rating: i64) {
-        let lbl = &mut self.eng_overlay;
-        if seq.1 == 1 {
-            // sequence contains only one placement
-            lbl[0].set(&format!("#{}", num + 1));
-        } else {
-            lbl[0].set(&format!("#{} ({}/{})", num + 1, seq.0 + 1, seq.1));
-        }
-        lbl[1].set(&format!("rating: {}", rating));
+    /// `seq`: `(idx, len)` of this sequence among other suggestions
+    /// `pos`: `(idx, len)` of the step in the sequence being displayed
+    /// `rating`: score at end of sequence
+    pub fn set_engine_overlay(&mut self, seq: (usize, usize), pos: (usize, usize), rating: i64) {
+        use std::fmt::Write;
+
+        let mut line = format!("#{} of {}", seq.0 + 1, seq.1);
+        self.eng_overlay[0].set(&line);
+        line.clear();
+
+        write!(&mut line, "rating {}", rating).unwrap();
+        self.eng_overlay[1].set(&line);
+        line.clear();
+
+        write!(&mut line, "{}/{}", pos.0 + 1, pos.1).unwrap();
+        self.eng_overlay[2].set(&line);
+        line.clear();
     }
 
     /// Clears the engine suggestion information.
@@ -334,9 +337,9 @@ impl<'r> View<'r> {
             }
         }
 
-        self.eng_overlay[0].render(tc, hud_font_small_bold, colors.text.0);
-        self.eng_overlay[1].render(tc, hud_font_small_bold, colors.text.0);
-        self.eng_overlay[2].render(tc, hud_font_small_bold, colors.text.0);
+        for lbl in self.eng_overlay.iter_mut() {
+            lbl.render(tc, hud_font_small_bold, colors.text.0);
+        }
         self.eng_status.render(tc, hud_font_small, colors.text.1);
 
         let piece_rating_color = if self.piece_rating.2 {

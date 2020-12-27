@@ -9,10 +9,9 @@ use crate::{BasicMatrix, Color};
 #[derive(Clone)]
 pub struct Node {
     state: State,
-    root_idx: u16,
     score: i64,
     penalty: i64,
-    depth: u8,
+    trace: Vec<u8>,
 }
 
 impl Node {
@@ -25,29 +24,9 @@ impl Node {
     pub fn new(state: State) -> Self {
         Self {
             state,
-            root_idx: std::u16::MAX,
-            depth: 0,
             score: std::i64::MAX,
             penalty: 0,
-        }
-    }
-
-    /// Returns the index of the first placement in this node's sequence, or `None` if
-    /// this is a root node. In that case, `successor()` should be called, which will
-    /// assign the new node a root_idx, which will stay constant for the remainder of the
-    /// sequence.
-    ///
-    /// # Why?
-    ///
-    /// `root_idx` is useful for identifying the first placement in a sequence, so that
-    /// placement may be suggested if a node later in the sequence is found to be
-    /// ideal. In the future, `root_idx` will be replaced with a full list of placements
-    /// so that the entire trace may be obtained for a given suggestion.
-    pub fn root_idx(&self) -> Option<usize> {
-        if self.root_idx < std::u16::MAX {
-            Some(self.root_idx as usize)
-        } else {
-            None
+            trace: Vec::with_capacity(8),
         }
     }
 
@@ -66,19 +45,20 @@ impl Node {
     }
 
     pub fn depth(&self) -> usize {
-        self.depth as usize
+        self.trace.len()
+    }
+
+    pub fn trace<'a>(&'a self) -> impl Iterator<Item = usize> + 'a {
+        self.trace.iter().map(|&idx| idx as usize)
     }
 
     /// Builds and returns a successor node derived from this node and the placement
     /// `place`, using `scoring` to score the returned node. `idx` is used to update the
     /// traceback.
     pub fn successor(&self, scoring: &ScoreParams, idx: usize, place: &Place) -> Self {
-        assert!(idx < (std::u16::MAX as _));
+        assert!(idx < (std::u8::MAX as _));
         let mut succ = self.clone();
-        if succ.root_idx == std::u16::MAX {
-            succ.root_idx = idx as u16;
-        }
-        succ.depth += 1;
+        succ.trace.push(idx as u8);
         succ.state.place(&place);
         succ.score = if succ.state.is_goal() {
             -10000
@@ -94,8 +74,10 @@ impl std::fmt::Debug for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "depth {}, score {:>3}, root {:>2}",
-            self.depth, self.score, self.root_idx,
+            "depth {}, score {:>3}, trace {:?}",
+            self.depth(),
+            self.score,
+            self.trace,
         )
     }
 }
@@ -148,7 +130,7 @@ impl State {
     }
 
     /// Applies the given placement to this state, modifying the queue and matrix.
-    fn place(&mut self, pl: &Place) {
+    pub fn place(&mut self, pl: &Place) {
         pl.shape.blit_to(&mut self.matrix, pl.tf);
         self.is_goal = self.matrix.sift_rows();
         self.pop(pl.did_hold);
@@ -195,9 +177,6 @@ impl From<Snapshot> for State {
 mod test {
     use super::*;
     use crate::{basic_matrix, shape::srs, Orientation::*};
-
-    #[cfg(feature = "slow-tests")]
-    use crate::ai::{a_star::AStar, dfs::DFS};
 
     #[test]
     fn test_state_operations() {
@@ -286,8 +265,8 @@ mod test {
             }
             .into(),
         );
-        assert_eq!(node.depth, 0);
-        assert_eq!(node.root_idx(), None);
+        assert_eq!(node.depth(), 0);
+        assert_eq!(node.trace().count(), 0);
         assert_eq!(node.state.is_goal(), false);
 
         // x . . . L
@@ -295,11 +274,11 @@ mod test {
         let l = srs.shape(Color::n('L')).unwrap();
         let tf = (-1, 2, R0);
         node = node.successor(&sp, 3, &Place::new(l, tf, false));
-        assert_eq!(node.depth, 1);
+        assert_eq!(node.depth(), 1);
         assert_eq!(node.state.next().0, Some(Color::n('O')));
         assert_eq!(node.state.next().1, None);
         assert_eq!(node.state.matrix(), &basic_matrix![[xx, __, __, __, xx]]);
-        assert_eq!(node.root_idx(), Some(3));
+        assert_eq!(node.trace().collect::<Vec<_>>(), [3]);
         assert_eq!(node.state.is_goal(), true);
 
         // O O . . .
@@ -310,7 +289,7 @@ mod test {
         node = node.successor(&sp, 4, &Place::new(o, tf, false));
         assert_eq!(node.depth(), 2);
         assert!(node.state.is_max_depth());
-        assert_eq!(node.root_idx(), Some(3)); // note: didn't change
+        assert_eq!(node.trace().collect::<Vec<_>>(), [3, 4]);
         assert_eq!(
             node.state.matrix,
             basic_matrix![
@@ -320,86 +299,5 @@ mod test {
             ]
         );
         assert_eq!(node.state.is_goal(), false);
-    }
-
-    #[cfg(feature = "slow-tests")]
-    fn snapshot_ex_4l_cheese() -> Snapshot {
-        let (xx, __) = (true, false);
-        Snapshot {
-            hold: None,
-            queue: "LTJIZSO".chars().map(Color::n).collect(),
-            matrix: basic_matrix![
-                [xx, xx, xx, xx, __, xx, xx, xx, xx, xx],
-                [xx, xx, __, xx, xx, xx, xx, xx, xx, xx],
-                [xx, xx, xx, xx, xx, xx, xx, xx, __, xx],
-                [xx, __, xx, xx, xx, xx, xx, xx, xx, xx],
-            ],
-        }
-    }
-
-    #[cfg(feature = "slow-tests")]
-    #[test]
-    fn test_dfs() {
-        let srs = srs();
-        let sp = ScoreParams::default();
-        let root = Node::new(snapshot_ex_4l_cheese().into());
-        let dfs_nodes = DFS::new(&srs, &sp, 3, root.clone()).collect::<Vec<_>>();
-        //  | sequence        | placements
-        // -+-----------------+--------------
-        //  | .               | 1
-        //  | L,      T       | 34
-        //  | LT, LJ, TJ, TL  | 34^2
-        //  | LTJ,LJT,TJL,TLJ | 34^3
-        //  | LTI,LJI,TJI,TLI | 34^2 * 17
-        let min_placement_count =
-            1 + (2 * 34) + (4 * 34 * 34) + (4 * 34 * 34 * 34) + (4 * 34 * 34 * 17);
-        // difficult to calculate number of placements taking tucks/spins into account...
-        assert_eq!(
-            std::cmp::min(dfs_nodes.len(), min_placement_count),
-            min_placement_count
-        );
-        assert!(dfs_nodes.iter().all(|n| n.depth <= 3));
-        println!("{} >= {}", dfs_nodes.len(), min_placement_count);
-    }
-
-    #[cfg(feature = "slow-tests")]
-    #[test]
-    fn test_a_star() {
-        let srs = srs();
-        let sp = ScoreParams::default();
-        let root = Node::new(snapshot_ex_4l_cheese().into());
-
-        static MAX_DEPTH: usize = 4;
-        let mut best_score = std::i64::MAX;
-
-        let mut dfs_traversed = 0u64;
-        if option_env!("SKIP_DFS_TEST").is_some() {
-            // experimental result
-            // last collected:
-            //   Tue Dec 15 10:23:14 PM EST 2020
-            // patch:
-            //   fdbfb13418cd71ac52d3b7368b15c49ee50adddc (v0.5.5/dev-kicks)
-            dfs_traversed = 10_990_644;
-            best_score = 260;
-        } else {
-            for n in DFS::new(&srs, &sp, MAX_DEPTH, root.clone()) {
-                dfs_traversed += 1;
-                best_score = std::cmp::min(best_score, n.score);
-            }
-        }
-
-        let mut ast_traversed = 0u64;
-        let mut ast = AStar::new(&srs, &sp, 10_000, root);
-        (&mut ast)
-            .take_while(|n| n.depth() < MAX_DEPTH || n.score() > best_score)
-            .for_each(|_| ast_traversed += 1);
-
-        println!("");
-        println!("best score @ depth {}: {}", MAX_DEPTH, best_score);
-        println!("dfs nodes traversed: {}", dfs_traversed);
-        println!("a* nodes traversed: {}", ast_traversed);
-        println!("a* heap size: {}", ast.node_count());
-
-        assert!((ast_traversed * 5000) < dfs_traversed);
     }
 }

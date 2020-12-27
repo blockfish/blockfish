@@ -21,8 +21,8 @@ pub const DEFAULT_BINDINGS: &[(Action, KeyStroke)] = {
         (Engine(Toggle), Control(E)),
         (Engine(Next), Only(Tab)),
         (Engine(Prev), Control(Tab)),
-        // (Engine(StepForward), Control(F)),
-        // (Engine(StepBackward), Control(B)),
+        (Engine(StepForward), Control(F)),
+        (Engine(StepBackward), Control(B)),
         (Engine(Goto), Only(Return)),
     ]
 };

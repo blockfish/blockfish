@@ -109,11 +109,11 @@ impl Race {
 
     fn step(&mut self) {
         let snapshot = self.stacker.snapshot().expect("no snapshot");
-        let best_suggestion = blockfish::AI::new(self.ai_cfg.clone())
-            .analyze(snapshot)
-            .min_by_key(|s| s.score)
-            .expect("no suggestions");
-        self.stacker.run(best_suggestion.inputs);
+        let mut analysis = blockfish::AI::new(self.ai_cfg.clone()).analyze(snapshot);
+        analysis.set_trace_max_len(1);
+
+        let best_suggestion = analysis.min_by_key(|s| s.score).expect("no suggestions");
+        self.stacker.run(best_suggestion.inputs_prefix(0));
         let (_, garbage_cleared) = self.stacker.hard_drop();
         self.trace.push(self.ds() + garbage_cleared);
     }

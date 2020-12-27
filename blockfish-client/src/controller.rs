@@ -11,8 +11,8 @@ pub struct Controller<'v> {
     view: Box<View<'v>>,
     controls: Controls,
     stacker: Stacker,
-    undo_list: Vec<(Stacker, Progress)>,
     progress: Progress,
+    undo_list: Vec<(Stacker, Progress)>,
     ai_config: BFConfig,
     engine: Option<Engine>,
 }
@@ -191,27 +191,8 @@ impl<'v> Controller<'v> {
 
     /// Handles an engine related user action.
     fn handle_engine_op(&mut self, op: EngineOp) {
-        if let Some(eng) = self.engine.as_mut() {
-            let mut stacker_chg = false;
-            match op {
-                EngineOp::Toggle => {
-                    self.engine = None;
-                }
-                EngineOp::Next | EngineOp::Prev => {
-                    let delta = if op == EngineOp::Prev { -1 } else { 1 };
-                    eng.select(delta);
-                }
-                EngineOp::Goto => {
-                    if let Some(new_stacker) = eng.go_to_selection() {
-                        self.stacker = new_stacker;
-                        stacker_chg = true;
-                    }
-                }
-                _ => {
-                    log::warn!("unimplemented: {:?}", op);
-                }
-            }
-            self.update_view(stacker_chg, stacker_chg, stacker_chg, true);
+        if let Some(eng) = self.engine.take() {
+            self.handle_engine_op_enabled(op, eng);
         } else {
             match op {
                 EngineOp::Toggle => {
@@ -219,6 +200,36 @@ impl<'v> Controller<'v> {
                     self.update_view(false, false, false, true);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// Handles an engine related user action, when engine is enabled. This function is
+    /// responsible for setting `self.engine` before returning.
+    fn handle_engine_op_enabled(&mut self, op: EngineOp, mut eng: Engine) {
+        match op {
+            EngineOp::Toggle => {
+                self.engine = None;
+                self.update_view(false, false, false, true);
+            }
+            EngineOp::Next | EngineOp::Prev => {
+                let delta = if op == EngineOp::Prev { -1 } else { 1 };
+                eng.select(delta, 0);
+                self.engine = Some(eng);
+                self.update_view(false, false, false, true);
+            }
+            EngineOp::Goto => {
+                // TODO: maybe this should be a GameOp? since it exclusively affects .stacker
+                //       and not .engine
+                let chg = eng.go_to_selection(&mut self.stacker);
+                self.engine = Some(eng);
+                self.update_view(chg, chg, chg, false);
+            }
+            EngineOp::StepForward | EngineOp::StepBackward => {
+                let step = if op == EngineOp::StepBackward { -1 } else { 1 };
+                eng.select(0, step);
+                self.engine = Some(eng);
+                self.update_view(false, false, false, true);
             }
         }
     }
@@ -265,23 +276,26 @@ struct Engine {
     start_time: std::time::Instant,
     params: String,
     source: Stacker,
-    source_frozen: Stacker,
     ai: Option<blockfish::Analysis>,
-    suggestions: Vec<blockfish::Suggestion>,
-    selected: Option<(usize, Stacker)>,
+    suggestions: Vec<Suggestion>,
+    selection: Option<Selection>,
     stats: Option<(f64, usize, usize)>,
 }
 
-// TODO: make this dynamic?
-const MAX_SUGGESTIONS: usize = 5;
+struct Suggestion(blockfish::Suggestion);
+
+struct Selection {
+    idx: usize,
+    pos: usize,
+    preview: Stacker,
+}
 
 impl Engine {
     /// Constructs a new `Engine` by starting a new Blockfish process with configuration
     /// parameters `config`, starting at the stacker state `source`.
-    fn new(config: BFConfig, source: Stacker) -> Self {
+    fn new(config: BFConfig, mut source: Stacker) -> Self {
+        source.reset_piece();
         let params = format!("{}", config);
-        let mut source_frozen = source.clone();
-        source_frozen.freeze();
         Self {
             start_time: std::time::Instant::now(),
             ai: match source.snapshot() {
@@ -289,11 +303,10 @@ impl Engine {
                 None => None,
             },
             suggestions: vec![],
-            selected: None,
+            selection: None,
             stats: None,
             params,
             source,
-            source_frozen,
         }
     }
 
@@ -306,41 +319,43 @@ impl Engine {
         view.clear_engine_piece();
         view.clear_engine_suggestion();
 
-        if let Some((num, stacker)) = self.selected.as_ref() {
-            view.set_engine_matrix(stacker.matrix());
-            if let Some((ty, _, j, r, i)) = stacker.current_piece() {
+        if let Some(sel) = self.selection.as_ref() {
+            view.set_engine_matrix(sel.preview.matrix());
+            if let Some((ty, _, j, r, i)) = sel.preview.current_piece() {
                 view.set_engine_piece(ty, i, j, r);
             }
             if self.finished() {
-                let num = *num;
-                let seq = (0, 1);
-                let score = self.suggestions[num].score;
-                view.set_engine_suggestion(num, seq, score);
+                let sugg = &self.suggestions[sel.idx];
+                let seq = (sel.idx, self.suggestions.len());
+                let pos = (sel.pos, sugg.steps());
+                let rating = sugg.rating();
+                view.set_engine_overlay(seq, pos, rating);
+
+                let is_last_step = pos.0 == pos.1 - 1;
+                if is_last_step {
+                    view.clear_engine_piece();
+                }
             }
         } else {
-            view.set_engine_matrix(self.source_frozen.matrix());
+            view.set_engine_matrix(self.source.matrix().map(|(ij, _)| (ij, 'H')));
         }
     }
 
     /// Adds `sugg` to the list of suggestions, or replaces an existing suggestion, then
     /// re-sorts the suggestions.
-    fn insert(&mut self, sugg: blockfish::Suggestion) {
+    fn insert(&mut self, new_sugg: blockfish::Suggestion) {
         let mut insert = true;
-        for prev_sugg in self.suggestions.iter_mut() {
-            if sugg.inputs == prev_sugg.inputs {
-                prev_sugg.score = sugg.score;
+        for sugg in self.suggestions.iter_mut() {
+            if sugg.update_from(&new_sugg) {
                 insert = false;
                 break;
             }
         }
         if insert {
-            self.suggestions.push(sugg);
+            self.suggestions.push(new_sugg.into());
         }
-        self.suggestions.sort_by_key(|sugg| sugg.score);
-        if self.suggestions.len() > MAX_SUGGESTIONS {
-            self.suggestions.pop();
-        }
-        self.select(0);
+        self.suggestions.sort_by_key(Suggestion::rating);
+        self.select(0, 0);
     }
 
     fn finished(&self) -> bool {
@@ -363,8 +378,9 @@ impl Engine {
                 }
                 None => {
                     let time = std::time::Instant::now() - self.start_time;
+                    let time = time.as_secs_f64();
                     if let Some((nodes, iters)) = ai.stats() {
-                        self.stats = Some((time.as_secs_f64(), nodes, iters));
+                        self.stats = Some((time, nodes, iters));
                     }
                     return true;
                 }
@@ -374,47 +390,81 @@ impl Engine {
         did_change
     }
 
-    /// Selects a different suggestion, moving by `delta` in the list of
-    /// suggestions. I.e., to move to the next suggestion, `delta` should be `1`, and to
-    /// move to the previous selection `delta` should be `-1`.
-    fn select(&mut self, delta: isize) {
-        let idx = match self.selected.as_ref() {
-            Some((idx, _)) => *idx,
-            None => 0,
+    /// Selects a different suggestion, moving by `delta` in the list of suggestions or
+    /// `step` in the sequence for the suggestion. I.e., to move to the next suggestion,
+    /// `delta` should be `1`, and to move to the previous selection `delta` should be
+    /// `-1`. To step forward or backwards, `step` should be `1` or `-1` respectively.
+    fn select(&mut self, delta: isize, step: isize) {
+        if self.suggestions.is_empty() {
+            return;
+        }
+
+        let source = &self.source;
+        let sel = self.selection.get_or_insert_with(|| Selection {
+            idx: 0,
+            pos: 0,
+            preview: source.clone(),
+        });
+
+        let seqs = self.suggestions.len();
+        sel.idx = (sel.idx + (seqs as isize + delta) as usize) % seqs;
+
+        let sugg = &self.suggestions[sel.idx];
+        let steps = sugg.steps();
+        sel.pos = if delta == 0 {
+            (sel.pos + (steps as isize + step) as usize) % steps
+        } else {
+            0
         };
-        let len = self.suggestions.len();
-        let idx = (idx + (len as isize + delta) as usize) % len;
-        let stacker = self.stacker_from_suggestion(true, idx);
-        self.selected = Some((idx, stacker));
+
+        let preview = &mut sel.preview;
+        preview.clone_from(&self.source);
+        preview.freeze();
+        sugg.run(preview, sel.pos);
     }
 
-    /// Returns the stacker state obtained by applying the selected suggestion. Returns
-    /// `None` if there are no valid suggestions to go to.
-    fn go_to_selection(&self) -> Option<Stacker> {
+    /// Tries to modify `dst` to go to the first step of the current selected suggestion.
+    /// Returns `true` if `dst` was modified, or `false` and leaves `dst` untouched if
+    /// there is no valid suggestion.
+    fn go_to_selection(&self, dst: &mut Stacker) -> bool {
         if !self.finished() {
-            None
+            return false;
+        }
+        let sugg = match self.selection.as_ref() {
+            Some(sel) => &self.suggestions[sel.idx],
+            None => return false,
+        };
+        dst.clone_from(&self.source);
+        sugg.run(dst, 0);
+        true
+    }
+}
+
+impl Suggestion {
+    fn steps(&self) -> usize {
+        self.0.depth() + 1
+    }
+
+    fn rating(&self) -> i64 {
+        self.0.score
+    }
+
+    fn run(&self, stacker: &mut Stacker, pos: usize) {
+        stacker.run(self.0.inputs_prefix(pos));
+    }
+
+    fn update_from(&mut self, src: &blockfish::Suggestion) -> bool {
+        if src.inputs_prefix(0).eq(self.0.inputs_prefix(0)) {
+            self.0.clone_from(src);
+            true
         } else {
-            if let Some((idx, _)) = self.selected {
-                Some(self.stacker_from_suggestion(false, idx))
-            } else {
-                None
-            }
+            false
         }
     }
+}
 
-    /// Computers the stacker state derived from the `idx`'th best suggestion. If `freeze`
-    /// is `true`, then `freeze()`s the stacker state before applying the suggestion.
-    ///
-    /// The engine matrix display should show frozen states, and the main matrix should
-    /// show non-frozen states.
-    fn stacker_from_suggestion(&self, freeze: bool, idx: usize) -> Stacker {
-        let mut stacker = if freeze {
-            self.source_frozen.clone()
-        } else {
-            self.source.clone()
-        };
-        stacker.reset_piece();
-        stacker.run(self.suggestions[idx].inputs.iter().cloned());
-        stacker
+impl From<blockfish::Suggestion> for Suggestion {
+    fn from(src: blockfish::Suggestion) -> Self {
+        Self(src)
     }
 }
