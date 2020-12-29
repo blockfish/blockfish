@@ -10,7 +10,6 @@ use block_stacker::{Config as BSConfig, Ruleset};
 use blockfish::Config as BFConfig;
 
 use argh::FromArgs;
-use sdl2::event::Event;
 use thiserror::Error;
 
 static VERSION: &'static str = "DEVELOPMENT BUILD";
@@ -34,7 +33,7 @@ fn sdl_error(e: impl std::fmt::Display) -> Error {
 #[derive(FromArgs)]
 struct Args {
     #[argh(positional)]
-    goal: Option<usize>,
+    goal: Option<Goal>,
     /// garbage level, defaults to 9
     #[argh(option, short = 'g')]
     garbage: Option<usize>,
@@ -53,7 +52,7 @@ impl Args {
     fn game_config(&self) -> BSConfig {
         let mut cfg = BSConfig::default();
         cfg.prng_seed = self.seed;
-        cfg.garbage.total_lines = self.goal;
+        cfg.garbage.total_lines = self.goal.unwrap_or_default().lines();
         if let Some(h) = self.garbage {
             cfg.garbage.max_height = h;
         }
@@ -65,6 +64,44 @@ impl Args {
 
     fn ai_config(&self) -> BFConfig {
         self.ai_params.clone().unwrap_or_default()
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum Goal {
+    Infinite,
+    Lines(usize),
+}
+
+impl Goal {
+    fn lines(&self) -> Option<usize> {
+        match *self {
+            Goal::Infinite => None,
+            Goal::Lines(n) => Some(n),
+        }
+    }
+}
+
+impl Default for Goal {
+    fn default() -> Self {
+        Goal::Lines(100)
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("invalid goal, expected number or 'infinite'")]
+struct ParseGoalError;
+
+impl std::str::FromStr for Goal {
+    type Err = ParseGoalError;
+    fn from_str(s: &str) -> std::result::Result<Self, ParseGoalError> {
+        if s == "infinite" {
+            Ok(Goal::Infinite)
+        } else {
+            s.parse()
+                .map(|n| Goal::Lines(n))
+                .map_err(|_| ParseGoalError)
+        }
     }
 }
 
@@ -106,36 +143,22 @@ fn entry(args: Args) -> Result<()> {
         .build()
         .map_err(sdl_error)?;
 
-    let mut sdl_events = sdl.event_pump().map_err(sdl_error)?;
+    let mut events = sdl.event_pump().map_err(sdl_error)?;
     let texture_creator = canvas.texture_creator();
 
     let rules = std::rc::Rc::new(Ruleset::guideline());
     let mut ctl = controller::Controller::new(
         block_stacker::Stacker::new(rules.clone(), args.game_config()),
-        view::View::new(rules, resources, VERSION),
-        controls::Controls::default(),
+        view::View::new(resources, rules, controls::Controls::default(), VERSION),
         args.ai_config(),
     );
 
     loop {
-        for evt in sdl_events.poll_iter() {
-            match evt {
-                // quit
-                Event::Quit { .. } => return Ok(()),
-
-                // keyboard
-                // TODO: KeyUp events
-                Event::KeyDown {
-                    keycode: Some(keycode),
-                    keymod,
-                    ..
-                } => {
-                    if let Some(action) = ctl.controls().parse(keycode, keymod) {
-                        ctl.handle(action);
-                    }
-                }
-
-                _ => {}
+        for evt in events.poll_iter() {
+            match ctl.view().handle(evt) {
+                Err(view::Quit) => return Ok(()),
+                Ok(Some(action)) => ctl.handle(action),
+                Ok(None) => {}
             }
         }
 

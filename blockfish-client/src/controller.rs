@@ -1,48 +1,55 @@
 use crate::{
-    controls::{Action, Controls, EngineOp, GameOp},
+    controls::{Action, EngineOp, GameOp, TreeOp},
     view::View,
 };
 use block_stacker::Stacker;
 use blockfish::{Config as BFConfig, StackerExt as _};
 
+use bitflags::bitflags;
+
 /// Controls a view according to changes in a `Stacker` state, incoming
 /// engine suggestions, and user actions.
 pub struct Controller<'v> {
     view: Box<View<'v>>,
-    controls: Controls,
     stacker: Stacker,
     progress: Progress,
     undo_list: Vec<(Stacker, Progress)>,
     ai_config: BFConfig,
     engine: Option<Engine>,
+    trie: Option<Trie>,
+}
+
+bitflags! {
+    struct Update: u8 {
+        const QUEUE   = 0b00000001; // just hold & next queue
+        const PIECE   = 0b00000010; // just current piece
+        const MATRIX  = 0b00000100; // just matrix cells
+        const STATS   = 0b00001000; // just stats labels
+        const STACKER = 0b00001111; // anything stacker related
+
+        const AI      = 0b00010000; // just ai info/preview
+        const TRIE    = 0b00100000; // just tr(e/i)e sidebar
+        const ENGINE  = 0b00110000; // anything engine related
+    }
 }
 
 impl<'v> Controller<'v> {
     /// Constructs a new `Controller`.
-    pub fn new(
-        stacker: Stacker,
-        view: Box<View<'v>>,
-        controls: Controls,
-        ai_config: BFConfig,
-    ) -> Self {
+    pub fn new(stacker: Stacker, view: Box<View<'v>>, ai_config: BFConfig) -> Self {
         let mut ctl = Self {
             view,
-            controls,
             ai_config,
             stacker,
+            trie: None,
             undo_list: Vec::with_capacity(100),
             progress: Progress::new(),
             engine: None,
         };
-        ctl.view.set_controls(&ctl.controls);
+
         ctl.consult_engine();
         ctl.undo_save();
-        ctl.update_view(true, true, true, true);
+        ctl.update_view(Update::all());
         ctl
-    }
-
-    pub fn controls(&self) -> &Controls {
-        &self.controls
     }
 
     pub fn view(&self) -> &View<'v> {
@@ -53,62 +60,70 @@ impl<'v> Controller<'v> {
         &mut self.view
     }
 
-    /// Updates parts of the view according to what changed since the last update.
-    fn update_view(
-        &mut self,
-        piece_changed: bool,
-        matrix_changed: bool,
-        queue_changed: bool,
-        engine_changed: bool,
-    ) {
-        let stacker = &self.stacker;
-        let view = self.view.as_mut();
-
-        if piece_changed {
-            match stacker.current_piece() {
-                Some((ty, i, j, r, g)) => view.set_piece(ty, i, j, r, g),
-                None => view.clear_piece(),
-            }
+    fn update_view(&mut self, upd: Update) {
+        if upd.contains(Update::QUEUE) {
+            let next = self.stacker.next().iter().cloned();
+            self.view.set_queue(next, self.stacker.held());
         }
-        if matrix_changed {
-            view.set_matrix(stacker.matrix());
+        if upd.contains(Update::PIECE) {
+            self.view.set_piece(self.stacker.current_piece());
         }
-        if queue_changed {
-            view.set_queue(stacker.next().to_vec(), stacker.held());
+        if upd.contains(Update::MATRIX) {
+            self.view.set_matrix(self.stacker.matrix());
         }
-
-        if engine_changed {
+        if upd.contains(Update::STATS) {
+            self.view.set_stats(
+                self.progress.pieces,
+                self.progress.lines,
+                self.progress.color_clears,
+                self.progress.downstack,
+                self.stacker.config().garbage.total_lines,
+            );
+        }
+        if upd.contains(Update::AI) {
             if let Some(eng) = self.engine.as_ref() {
-                eng.update_view(view);
+                eng.update_view(&mut self.view)
             } else {
-                view.set_engine_disabled();
+                self.view.set_engine_disabled();
             }
         }
-
-        view.set_stats(
-            self.progress.pieces,
-            self.progress.lines,
-            self.progress.color_clears,
-            self.progress.downstack,
-            stacker.config().garbage.total_lines,
-        );
+        if upd.contains(Update::TRIE) {
+            if let Some(trie) = self.trie.as_mut() {
+                self.view.enable_tree();
+                trie.update_view(&mut self.view);
+            } else {
+                self.view.disable_tree();
+            }
+        }
     }
 
     /// Ends the previous engine process and starts an analysis of the current stacker
     /// state.
     fn consult_engine(&mut self) {
-        self.engine = Some(Engine::new(self.ai_config.clone(), self.stacker.clone()));
+        self.engine = Some(Engine::new(
+            self.ai_config.clone(),
+            self.stacker.clone(),
+            self.trie.is_some(),
+        ));
+        if let Some(trie) = self.trie.as_mut() {
+            trie.reroot(self.stacker.clone());
+        }
+    }
+
+    /// Disables the engine
+    fn disable_engine(&mut self) {
+        self.engine = None;
+        if let Some(trie) = self.trie.as_mut() {
+            trie.clear();
+        }
     }
 
     /// Polls the engine process for any updates to its progress.
     pub fn poll_engine(&mut self) {
-        let e_chg = if let Some(eng) = self.engine.as_mut() {
-            eng.poll()
-        } else {
-            false
-        };
-        if e_chg {
-            self.update_view(false, false, false, true);
+        if let Some(eng) = self.engine.as_mut() {
+            if eng.poll(self.trie.as_mut()) {
+                self.update_view(Update::ENGINE);
+            }
         }
     }
 
@@ -131,31 +146,42 @@ impl<'v> Controller<'v> {
         match action {
             Action::Game(op) => self.handle_game_op(op),
             Action::Engine(op) => self.handle_engine_op(op),
+            Action::Tree(op) => self.handle_tree_op(op),
         }
     }
 
     /// Handles a game input, updating both the stacker state and view accordingly.
     fn handle_game_op(&mut self, op: GameOp) {
-        let (p_chg, m_chg, q_chg) = match op {
+        let mut upd = Update::empty();
+        match op {
             GameOp::MoveLeft | GameOp::MoveRight => {
                 let dx = if op == GameOp::MoveLeft { -1 } else { 1 };
-                (self.stacker.move_horizontal(dx), false, false)
+                if self.stacker.move_horizontal(dx) {
+                    upd |= Update::PIECE;
+                }
             }
             GameOp::RotateCCW | GameOp::RotateCW => {
                 let dr = if op == GameOp::RotateCCW { -1 } else { 1 };
-                (self.stacker.rotate(dr), false, false)
+                if self.stacker.rotate(dr) {
+                    upd |= Update::PIECE;
+                }
             }
-            GameOp::SonicDrop => (self.stacker.sonic_drop(), false, false),
+            GameOp::SonicDrop => {
+                if self.stacker.sonic_drop() {
+                    upd |= Update::PIECE;
+                }
+            }
             GameOp::Hold => {
-                let chg = self.stacker.hold();
-                (chg, false, chg)
+                if self.stacker.hold() {
+                    upd |= Update::PIECE | Update::QUEUE;
+                }
             }
             GameOp::HardDrop => {
                 self.undo_save();
                 let (lc, ds) = self.stacker.hard_drop();
                 let cc = self.stacker.is_matrix_colorless();
                 self.progress.incr(lc, ds, cc);
-                (true, true, true)
+                upd |= Update::STACKER;
             }
             GameOp::Reset => {
                 let ruleset = self.stacker.ruleset().clone();
@@ -165,28 +191,23 @@ impl<'v> Controller<'v> {
                 self.progress = Progress::new();
                 self.undo_list.clear();
                 self.undo_save();
-                (true, true, true)
+                upd |= Update::STACKER;
             }
             GameOp::Undo => {
                 self.undo_restore();
                 if self.undo_list.is_empty() {
                     self.undo_save();
                 }
-                (true, true, true)
+                upd |= Update::STACKER;
             }
-        };
+        }
 
-        // if the matrix changed, we need to reconsult the engine
-        let e_chg = if m_chg && self.engine.is_some() {
+        if self.engine.is_some() && upd.intersects(Update::MATRIX) {
             self.consult_engine();
-            true
-        } else {
-            false
-        };
+            upd |= Update::ENGINE;
+        }
 
-        // TODO: re-request piece rating if piece changed
-
-        self.update_view(p_chg, m_chg, q_chg, e_chg);
+        self.update_view(upd);
     }
 
     /// Handles an engine related user action.
@@ -197,7 +218,7 @@ impl<'v> Controller<'v> {
             match op {
                 EngineOp::Toggle => {
                     self.consult_engine();
-                    self.update_view(false, false, false, true);
+                    self.update_view(Update::ENGINE);
                 }
                 _ => {}
             }
@@ -209,27 +230,77 @@ impl<'v> Controller<'v> {
     fn handle_engine_op_enabled(&mut self, op: EngineOp, mut eng: Engine) {
         match op {
             EngineOp::Toggle => {
-                self.engine = None;
-                self.update_view(false, false, false, true);
+                self.disable_engine();
+                self.update_view(Update::ENGINE);
             }
             EngineOp::Next | EngineOp::Prev => {
                 let delta = if op == EngineOp::Prev { -1 } else { 1 };
                 eng.select(delta, 0);
                 self.engine = Some(eng);
-                self.update_view(false, false, false, true);
+                self.update_view(Update::AI);
             }
             EngineOp::Goto => {
                 // TODO: maybe this should be a GameOp? since it exclusively affects .stacker
                 //       and not .engine
-                let chg = eng.go_to_selection(&mut self.stacker);
+                let updated = eng.go_to_selection(&mut self.stacker);
                 self.engine = Some(eng);
-                self.update_view(chg, chg, chg, false);
+                if updated {
+                    self.update_view(Update::STACKER);
+                }
             }
             EngineOp::StepForward | EngineOp::StepBackward => {
                 let step = if op == EngineOp::StepBackward { -1 } else { 1 };
                 eng.select(0, step);
                 self.engine = Some(eng);
-                self.update_view(false, false, false, true);
+                self.update_view(Update::AI);
+            }
+        }
+    }
+
+    /// Handles an tree related user action, when tree is enabled. This function is
+    /// responsible for setting `self.trie` before returning.
+    fn handle_tree_op(&mut self, op: TreeOp) {
+        if let Some(trie) = self.trie.take() {
+            self.handle_tree_op_enabled(op, trie);
+        } else {
+            match op {
+                TreeOp::Toggle => {
+                    self.trie = Some(Trie::new());
+                    self.update_view(Update::TRIE);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Handles an tree related user action, when tree is enabled. This function is
+    /// responsible for setting `self.trie` before returning.
+    fn handle_tree_op_enabled(&mut self, op: TreeOp, mut trie: Trie) {
+        match op {
+            TreeOp::Toggle => {
+                self.update_view(Update::TRIE);
+            }
+            TreeOp::OverEntry(idx) => {
+                trie.set_hover(Some(idx));
+                self.trie = Some(trie);
+                self.update_view(Update::TRIE);
+            }
+            TreeOp::Out => {
+                trie.set_hover(None);
+                self.trie = Some(trie);
+                self.update_view(Update::ENGINE);
+            }
+            TreeOp::ClickEntry(idx) => {
+                let updated = trie.expand(idx);
+                self.trie = Some(trie);
+                if updated {
+                    self.update_view(Update::TRIE);
+                }
+            }
+            TreeOp::ScrollBy(dy) => {
+                trie.scroll_by(dy);
+                self.trie = Some(trie);
+                self.update_view(Update::TRIE);
             }
         }
     }
@@ -292,14 +363,25 @@ struct Selection {
 
 impl Engine {
     /// Constructs a new `Engine` by starting a new Blockfish process with configuration
-    /// parameters `config`, starting at the stacker state `source`.
-    fn new(config: BFConfig, mut source: Stacker) -> Self {
+    /// parameters `config`, starting at the stacker state `source`. If `collect_all` is
+    /// `true`, then all suggestions will be collected. Otherwise only the ones that win
+    /// their individual branches. The latter is faster but the former is better for
+    /// diagnostics (ie. when the tree sidebar is visible).
+    fn new(config: BFConfig, mut source: Stacker, collect_all: bool) -> Self {
         source.reset_piece();
         let params = format!("{}", config);
         Self {
             start_time: std::time::Instant::now(),
             ai: match source.snapshot() {
-                Some(ss) => Some(blockfish::AI::new(config).analyze(ss)),
+                Some(ss) => {
+                    let mut ai = blockfish::AI::new(config);
+                    ai.set_suggestion_filter(if collect_all {
+                        blockfish::SuggestionFilter::All
+                    } else {
+                        blockfish::SuggestionFilter::LocalBest
+                    });
+                    Some(ai.analyze(ss))
+                }
                 None => None,
             },
             suggestions: vec![],
@@ -312,32 +394,29 @@ impl Engine {
 
     /// Updates `view` to show the current state of the engine process, and the selected
     /// suggestion.
+    // TODO: partial updates for the engine matrix
     fn update_view(&self, view: &mut View) {
         view.set_engine_status(&self.params, self.stats);
-
-        // TODO: partial updates for the engine matrix
-        view.clear_engine_piece();
-        view.clear_engine_suggestion();
-
         if let Some(sel) = self.selection.as_ref() {
             view.set_engine_matrix(sel.preview.matrix());
-            if let Some((ty, _, j, r, i)) = sel.preview.current_piece() {
-                view.set_engine_piece(ty, i, j, r);
-            }
+            view.set_engine_piece(sel.preview.current_piece_ghost());
             if self.finished() {
                 let sugg = &self.suggestions[sel.idx];
                 let seq = (sel.idx, self.suggestions.len());
                 let pos = (sel.pos, sugg.steps());
                 let rating = sugg.rating();
                 view.set_engine_overlay(seq, pos, rating);
-
                 let is_last_step = pos.0 == pos.1 - 1;
                 if is_last_step {
-                    view.clear_engine_piece();
+                    view.set_engine_piece(None);
                 }
+            } else {
+                view.clear_engine_overlay();
             }
         } else {
             view.set_engine_matrix(self.source.matrix().map(|(ij, _)| (ij, 'H')));
+            view.set_engine_piece(None);
+            view.clear_engine_overlay();
         }
     }
 
@@ -363,18 +442,24 @@ impl Engine {
     }
 
     /// Polls the Blockfish process, returning `true` if the suggestions were updated as a
-    /// result.
-    fn poll(&mut self) -> bool {
+    /// result. Suggestions are inserted into `trie` as well.
+    fn poll(&mut self, mut trie: Option<&mut Trie>) -> bool {
         let mut ai = match self.ai.take() {
             Some(ai) => ai,
             None => return false,
         };
-        let mut did_change = false;
-        while !ai.would_block() {
+
+        const MAX_POLLS_PER_FRAME: usize = 100;
+        let mut polls = 0;
+        while !ai.would_block() && polls < MAX_POLLS_PER_FRAME {
             match ai.next() {
                 Some(sugg) => {
+                    if let Some(trie) = trie.as_mut() {
+                        let inputs = &sugg.inputs[..sugg.inputs.len() - 1];
+                        trie.insert(inputs, sugg.score);
+                    }
                     self.insert(sugg);
-                    did_change = true;
+                    polls += 1;
                 }
                 None => {
                     let time = std::time::Instant::now() - self.start_time;
@@ -386,8 +471,9 @@ impl Engine {
                 }
             }
         }
+
         self.ai = Some(ai);
-        did_change
+        polls > 0
     }
 
     /// Selects a different suggestion, moving by `delta` in the list of suggestions or
@@ -455,7 +541,9 @@ impl Suggestion {
 
     fn update_from(&mut self, src: &blockfish::Suggestion) -> bool {
         if src.inputs_prefix(0).eq(self.0.inputs_prefix(0)) {
-            self.0.clone_from(src);
+            if src.score < self.0.score {
+                self.0.clone_from(src);
+            }
             true
         } else {
             false
@@ -466,5 +554,179 @@ impl Suggestion {
 impl From<blockfish::Suggestion> for Suggestion {
     fn from(src: blockfish::Suggestion) -> Self {
         Self(src)
+    }
+}
+
+struct Trie {
+    nodes: Vec<TrieNode>,
+    linear: Vec<TrieNodeId>,
+    hover: Option<usize>,
+    scroll: i32,
+}
+
+struct TrieNode {
+    key: Vec<blockfish::Input>,
+    stacker: Stacker,
+    depth: usize,
+    rating: Option<i64>,
+    best_rating: i64,
+    count: usize,
+    children: Vec<TrieNodeId>,
+    expanded: bool,
+}
+
+type TrieNodeId = usize;
+
+impl Trie {
+    fn new() -> Self {
+        Self {
+            nodes: vec![],
+            linear: vec![],
+            hover: None,
+            scroll: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.nodes.clear();
+        self.linear.clear();
+    }
+
+    fn reroot(&mut self, mut stacker: Stacker) {
+        stacker.freeze();
+        stacker.reset_piece();
+        let root = TrieNode::new(vec![], stacker, std::usize::MAX);
+        self.nodes.clear();
+        self.nodes.push(root);
+        self.linearize();
+    }
+
+    fn set_hover(&mut self, hover: Option<usize>) {
+        self.hover = hover;
+    }
+
+    fn insert(&mut self, inputs: &[blockfish::Input], rating: i64) {
+        if self.nodes.is_empty() {
+            // cannot insert if no root
+            return;
+        }
+
+        let mut stacker = self[0].stacker.clone();
+        let mut node_id = 0; // root
+        for (depth, prefix) in inputs.split(|&i| i == blockfish::Input::HD).enumerate() {
+            stacker.run(prefix.iter().cloned());
+
+            // create new child if needed
+            let mut children = std::mem::take(&mut self[node_id].children);
+            let child_id = children
+                .iter()
+                .find(|&&id| &self[id].key == prefix)
+                .cloned();
+            let child_id = child_id.unwrap_or_else(|| {
+                self.nodes
+                    .push(TrieNode::new(prefix.to_vec(), stacker.clone(), depth));
+                let id = self.nodes.len() - 1;
+                children.push(id);
+                id
+            });
+
+            // update rating & leaf count
+            self[child_id].best_rating = std::cmp::min(self[child_id].best_rating, rating);
+            self[child_id].count += 1;
+            // re-sort child nodes
+            children.sort_by_key(|&id| self[id].best_rating);
+            self[node_id].children = children;
+            node_id = child_id;
+            stacker.hard_drop();
+        }
+
+        // fixup final node
+        self[node_id].rating = Some(rating);
+        self.linearize();
+    }
+
+    fn expand(&mut self, entry_idx: usize) -> bool {
+        if let Some(&id) = self.linear.get(entry_idx) {
+            let node = &mut self[id];
+            node.expanded = !node.expanded;
+            self.linearize();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn linearize(&mut self) {
+        self.linear.clear();
+        // initialize with root nodes
+        let mut stack = self[0].children.clone();
+        stack.reverse();
+        while let Some(id) = stack.pop() {
+            let node = &self[id];
+            if node.expanded {
+                // push in reverse order, so we `pop()` in order
+                stack.extend(node.children.iter().rev().cloned());
+            }
+            self.linear.push(id);
+        }
+    }
+
+    fn scroll_by(&mut self, dy: i32) {
+        self.scroll += dy;
+    }
+
+    fn update_view(&mut self, view: &mut View) {
+        view.set_tree_nodes(self.linear.iter().map(|&id| self[id].view()));
+
+        view.set_tree_hover(self.hover);
+        if let Some(&hover_id) = self.hover.and_then(|idx| self.linear.get(idx)) {
+            let preview = &self[hover_id].stacker;
+            view.set_engine_matrix(preview.matrix());
+            view.set_engine_piece(preview.current_piece_ghost());
+            view.clear_engine_overlay();
+        }
+
+        let scroll_bounds = view.tree_scroll_bounds();
+        self.scroll = std::cmp::max(scroll_bounds.start, self.scroll);
+        self.scroll = std::cmp::min(scroll_bounds.end, self.scroll);
+        view.set_tree_scroll(self.scroll);
+    }
+}
+
+impl std::ops::Index<TrieNodeId> for Trie {
+    type Output = TrieNode;
+    fn index(&self, id: TrieNodeId) -> &TrieNode {
+        &self.nodes[id]
+    }
+}
+
+impl std::ops::IndexMut<TrieNodeId> for Trie {
+    fn index_mut(&mut self, id: TrieNodeId) -> &mut TrieNode {
+        &mut self.nodes[id]
+    }
+}
+
+impl TrieNode {
+    fn new(key: Vec<blockfish::Input>, stacker: Stacker, depth: usize) -> Self {
+        Self {
+            key,
+            stacker,
+            depth,
+            rating: None,
+            best_rating: std::i64::MAX,
+            count: 0,
+            children: vec![],
+            expanded: false,
+        }
+    }
+
+    fn view(&self) -> crate::view::TreeNode {
+        crate::view::TreeNode {
+            piece: self.stacker.current_piece_type().unwrap_or('H'),
+            depth: self.depth,
+            count: self.count,
+            rating: self.rating,
+            best_rating: self.best_rating,
+        }
     }
 }

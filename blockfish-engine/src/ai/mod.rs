@@ -40,6 +40,19 @@ impl Default for Config {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SuggestionFilter {
+    All,
+    LocalBest,
+    GlobalBest,
+}
+
+impl Default for SuggestionFilter {
+    fn default() -> Self {
+        SuggestionFilter::All
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ParseConfigError {
     #[error("invalid integer format")]
@@ -135,6 +148,7 @@ impl Suggestion {
 pub struct AI {
     config: Config,
     shape_table: Arc<ShapeTable>,
+    filter: SuggestionFilter,
 }
 
 /// A handle to a blockfish analysis running in the background. Can be polled for new
@@ -147,13 +161,13 @@ pub struct Analysis {
     inbox: Cell<Option<Msg>>,
     // holds statistics about the worker thread, after the thread finishes
     stats: AtomicStats,
-    // length to truncate traces before computing inputs
-    trace_max_len: usize,
     // function to compute inputs for a trace
     get_trace_inputs: Box<TraceInputsFn>,
 }
 
 type TraceInputsFn = dyn FnMut(&[usize], &mut Vec<Input>);
+
+const ANALYSIS_CHANNEL_CAPACITY: usize = 512;
 
 // Message type passed from worker threads to Analysis's.
 #[derive(Clone, Debug)]
@@ -172,6 +186,7 @@ impl AI {
         Self {
             config,
             shape_table: srs().into(),
+            filter: SuggestionFilter::default(),
         }
     }
 
@@ -179,10 +194,16 @@ impl AI {
         self.config.clone()
     }
 
+    /// Configure the filter rule for the next analysis.
+    pub fn set_suggestion_filter(&mut self, filter: SuggestionFilter) {
+        self.filter = filter;
+    }
+
     /// Begins a new analysis of `snapshot`, returning a handle to it.
     pub fn analyze(&mut self, snapshot: Snapshot) -> Analysis {
         Analysis::start(
             self.config.clone(),
+            self.filter,
             self.shape_table.clone(),
             snapshot.into(),
         )
@@ -199,28 +220,35 @@ impl Analysis {
             rx,
             inbox: Cell::new(None),
             stats: Arc::new((false.into(), 0.into(), 0.into())),
-            trace_max_len: std::usize::MAX,
             get_trace_inputs: Box::new(f),
         }
     }
 
     /// Starts an analysis of initial state `init_state`, returning a handle to it.
-    fn start(cfg: Config, shtb: Arc<ShapeTable>, init: State) -> Self {
-        let (tx, rx) = mpsc::sync_channel(1024);
+    fn start(cfg: Config, filter: SuggestionFilter, shtb: Arc<ShapeTable>, init: State) -> Self {
+        let (tx, rx) = mpsc::sync_channel(ANALYSIS_CHANNEL_CAPACITY);
         let analysis = Analysis::new(rx, reconstruct_traces_from(shtb.clone(), init.clone()));
         let stats = analysis.stats.clone();
-        std::thread::spawn(move || Analysis::work(cfg, shtb, Node::new(init), tx, stats));
+        std::thread::spawn(move || Analysis::work(cfg, filter, shtb, Node::new(init), tx, stats));
         analysis
     }
 
     /// Performs the work of an analysis, starting with root node `Node`. New potential
     /// suggestions are pushed to channel `tx`, and final stats are updated to `stats`.
-    fn work(cfg: Config, shtb: Arc<ShapeTable>, root: Node, tx: Tx, stats: AtomicStats) {
+    fn work(
+        cfg: Config,
+        filter: SuggestionFilter,
+        shtb: Arc<ShapeTable>,
+        root: Node,
+        tx: Tx,
+        stats: AtomicStats,
+    ) {
         assert!(root.depth() == 0);
         let mut search = AStar::new(&shtb, &cfg.scoring, cfg.search_limit, root);
         let mut root_score = vec![];
-        let mut best = std::i64::MAX;
+        let mut best = None::<Node>;
         let mut iters = 0;
+
         while let Some(node) = search.next() {
             iters += 1;
 
@@ -233,9 +261,20 @@ impl Analysis {
             }
 
             let score = node.score();
-            if score < root_score[root_idx] {
-                root_score[root_idx] = score;
+            let suggest = match filter {
+                SuggestionFilter::All => true,
+                SuggestionFilter::GlobalBest => false,
+                SuggestionFilter::LocalBest => {
+                    if score < root_score[root_idx] {
+                        root_score[root_idx] = score;
+                        true
+                    } else {
+                        false
+                    }
+                }
+            };
 
+            if suggest {
                 let trace = node.trace().collect();
                 if tx.send(Msg { score, trace }).is_err() {
                     log::warn!("analysis dropped; quitting early");
@@ -243,7 +282,11 @@ impl Analysis {
                 }
             }
 
-            if score < best {
+            if best
+                .as_ref()
+                .map(|best| score < best.score())
+                .unwrap_or(true)
+            {
                 log::debug!(
                     "root {} @ depth {}, score => {} (iteration #{})",
                     root_idx,
@@ -251,11 +294,21 @@ impl Analysis {
                     score,
                     iters,
                 );
-                best = score;
+                best = Some(node);
             }
 
             if search.node_count() >= cfg.search_limit {
                 break;
+            }
+        }
+
+        if filter == SuggestionFilter::GlobalBest {
+            if let Some(node) = best {
+                let trace = node.trace().collect();
+                let score = node.score();
+                if tx.send(Msg { score, trace }).is_err() {
+                    log::warn!("analysis dropped; best could not be sent");
+                }
             }
         }
 
@@ -269,9 +322,8 @@ impl Analysis {
 
     /// Computes the list of inputs to perform the sequence given by `root_idx`.
     fn inputs(&mut self, trace: &[usize]) -> Vec<Input> {
-        let len = std::cmp::min(trace.len(), self.trace_max_len);
-        let mut inputs = Vec::with_capacity(len * 8);
-        (self.get_trace_inputs)(&trace[..len], &mut inputs);
+        let mut inputs = Vec::with_capacity(trace.len() * 8);
+        (self.get_trace_inputs)(&trace, &mut inputs);
         inputs
     }
 
@@ -300,18 +352,6 @@ impl Analysis {
         };
         self.inbox.set(Some(msg));
         false
-    }
-
-    /// Sets the maximum length of traces returned in suggestions. For instance, if `n` is
-    /// `1` then suggestions will only contain inputs for the first piece in their
-    /// sequence. If `n` is `0` then no inputs will returned, only the score will be
-    /// computed.
-    ///
-    /// This function does not affect the actual search depth performed by the analysis,
-    /// only the list of inputs in resulting suggestions. It is recommended to set this to
-    /// `1` for non-interactive where you are performing inputs one at a time.
-    pub fn set_trace_max_len(&mut self, n: usize) {
-        self.trace_max_len = n;
     }
 }
 
@@ -502,21 +542,6 @@ mod test {
         std::mem::drop(tx);
         assert_eq!(analysis.next(), None);
         assert_eq!(analysis.next(), None);
-    }
-
-    #[test]
-    fn test_analysis_trace_max_len() {
-        let msg = Msg {
-            trace: vec![0; 100],
-            score: 8,
-        };
-        let (tx, rx) = mpsc::sync_channel(1);
-        let mut analysis = Analysis::new(rx, spam_hd_traces);
-        tx.send(msg.clone()).unwrap();
-        assert_eq!(analysis.next().unwrap().inputs, [Input::HD; 100]);
-        tx.send(msg.clone()).unwrap();
-        analysis.set_trace_max_len(5);
-        assert_eq!(analysis.next().unwrap().inputs, [Input::HD; 5]);
     }
 
     #[test]

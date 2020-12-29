@@ -90,6 +90,7 @@ name = "blockfish-client"
 version = "0.1.0"
 dependencies = [
  "argh",
+ "bitflags",
  "block-stacker",
  "blockfish",
  "fontconfig",

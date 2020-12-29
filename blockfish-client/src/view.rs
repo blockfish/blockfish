@@ -1,10 +1,16 @@
-use crate::{controls::Controls, resources::Resources};
+use crate::{
+    controls::{Action, Controls},
+    resources::Resources,
+};
 use block_stacker::{CellColor, PieceType, Ruleset};
-use sdl2::{pixels::Color, rect::Rect, render::Texture};
-use std::{collections::HashMap, rc::Rc};
+use sdl2::{pixels::Color, rect::Point, rect::Rect, render::Texture};
+use std::{collections::HashMap, ops::Range, rc::Rc};
 
 /// Default window size for view.
 pub static DEFAULT_SIZE: (u32, u32) = (1200, 720);
+
+/// Pixels to scroll for every 'tick' of the scroll wheel.
+pub static SCROLL_WHEEL_SPEED: i32 = 13;
 
 /// Holds all of the graphical elements to draw on the view, and where to draw them.
 pub struct View<'r> {
@@ -12,6 +18,7 @@ pub struct View<'r> {
     ruleset: Rc<Ruleset>,
     colors: Colors,
     geom: Geometry,
+    controls: Controls,
     queue: Cells,
     matrix: Cells,
     piece: Cells,
@@ -20,12 +27,24 @@ pub struct View<'r> {
     eng_ghost: Cells,
     motd: Label<'r>,
     stats: Vec<Label<'r>>,
-    controls: [(Label<'r>, Vec<Label<'r>>); 2],
+    help: [Vec<Label<'r>>; 2],
     progress: (Label<'r>, bool),
-    piece_rating: (Label<'r>, Label<'r>, bool),
     eng_overlay: [Label<'r>; 3],
     eng_status: Label<'r>,
+    tree_sidebar: Option<TreeSidebar<'r>>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeNode {
+    pub piece: PieceType,
+    pub depth: usize,
+    pub count: usize,
+    pub rating: Option<i64>,
+    pub best_rating: i64,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Quit;
 
 /// Canvas type that `View` is able to paint to.
 pub type Canvas = sdl2::render::Canvas<sdl2::video::Window>;
@@ -35,21 +54,26 @@ pub type TextureCreator = sdl2::render::TextureCreator<sdl2::video::WindowContex
 
 impl<'r> View<'r> {
     /// Constructs a new view.
-    pub fn new(ruleset: Rc<Ruleset>, resources: Resources<'r>, version_string: &str) -> Box<Self> {
-        let mut motd = Label::new();
-        motd.set(&format!("Blockfish {}", version_string));
-
-        let mut hd0 = Label::new();
-        let mut hd1 = Label::new();
-        hd0.set("game controls");
-        hd1.set("engine controls");
-
+    pub fn new(
+        resources: Resources<'r>,
+        ruleset: Rc<Ruleset>,
+        controls: Controls,
+        version_string: &str,
+    ) -> Box<Self> {
         let rows = ruleset.visible_rows as u16;
         let cols = ruleset.cols as u16;
 
+        let mut motd = Label::new();
+        let mut help = [vec![], vec![]];
+        Self::set_motd(&mut motd, version_string);
+        Self::set_help_labels_controls(&mut help, &controls);
+
         Box::new(Self {
-            ruleset,
             resources,
+            ruleset,
+            controls,
+            motd,
+            help,
             colors: Colors::dark_theme(),
             geom: Geometry::new(rows, cols, DEFAULT_SIZE),
             queue: Cells::new(None),
@@ -59,18 +83,19 @@ impl<'r> View<'r> {
             eng_matrix: Cells::new(Some(rows)),
             eng_ghost: Cells::new(Some(rows)),
             stats: Vec::with_capacity(4),
-            controls: [(hd0, vec![]), (hd1, vec![])],
             progress: (Label::new(), false),
-            piece_rating: (Label::new(), Label::new(), true),
             eng_status: Label::new(),
             eng_overlay: [Label::new(), Label::new(), Label::new()],
-            motd,
+            tree_sidebar: None,
         })
     }
 
-    /// Sets the controls configuration to be displayed on the side of the view.
-    pub fn set_controls(&mut self, controls: &Controls) {
-        use crate::controls::{Action, EngineOp::*, GameOp::*};
+    fn set_motd(label: &mut Label<'r>, version_string: &str) {
+        label.set(&format!("Blockfish {}", version_string));
+    }
+
+    fn set_help_labels_controls(help: &mut [Vec<Label<'r>>], controls: &Controls) {
+        use crate::controls::{EngineOp::*, GameOp::*};
 
         let label_text = |prefix: &str, actions: &[Action]| {
             let mut buf = String::with_capacity(16);
@@ -95,25 +120,27 @@ impl<'r> View<'r> {
         let hold = &[Action::Game(Hold)];
         let undo = &[Action::Game(Undo)];
         let reset = &[Action::Game(Reset)];
-        let game_ctrls = &mut self.controls[0].1;
-        game_ctrls.resize_with(6, Label::new);
-        game_ctrls[0].set(&label_text("\u{2190}, \u{2192}:         ", left_right));
-        game_ctrls[1].set(&label_text("ccw, cw:      ", ccw_cw));
-        game_ctrls[2].set(&label_text("sd, hd:       ", sd_hd));
-        game_ctrls[3].set(&label_text("hold:         ", hold));
-        game_ctrls[4].set(&label_text("undo:         ", undo));
-        game_ctrls[5].set(&label_text("reset:        ", reset));
+        let game_ctrls = &mut help[0];
+        game_ctrls.resize_with(7, Label::new);
+        game_ctrls[0].set("game controls");
+        game_ctrls[1].set(&label_text("\u{2190}, \u{2192}:         ", left_right));
+        game_ctrls[2].set(&label_text("ccw, cw:      ", ccw_cw));
+        game_ctrls[3].set(&label_text("sd, hd:       ", sd_hd));
+        game_ctrls[4].set(&label_text("hold:         ", hold));
+        game_ctrls[5].set(&label_text("undo:         ", undo));
+        game_ctrls[6].set(&label_text("reset:        ", reset));
 
         let toggle = &[Action::Engine(Toggle)];
         let switch = &[Action::Engine(Next), Action::Engine(Prev)];
         let step = &[Action::Engine(StepForward), Action::Engine(StepBackward)];
         let go_to = &[Action::Engine(Goto)];
-        let eng_ctrls = &mut self.controls[1].1;
-        eng_ctrls.resize_with(4, Label::new);
-        eng_ctrls[0].set(&label_text("toggle:       ", toggle));
-        eng_ctrls[1].set(&label_text("switch sugg:  ", switch));
-        eng_ctrls[2].set(&label_text("step sugg:    ", step));
-        eng_ctrls[3].set(&label_text("go to sugg:   ", go_to));
+        let eng_ctrls = &mut help[1];
+        eng_ctrls.resize_with(5, Label::new);
+        eng_ctrls[0].set("engine controls");
+        eng_ctrls[1].set(&label_text("toggle:       ", toggle));
+        eng_ctrls[2].set(&label_text("switch sugg:  ", switch));
+        eng_ctrls[3].set(&label_text("step sugg:    ", step));
+        eng_ctrls[4].set(&label_text("go to sugg:   ", go_to));
     }
 
     /// Sets the next previews to contain each piece type in `previews`, and the hold
@@ -155,64 +182,38 @@ impl<'r> View<'r> {
         self.eng_matrix.insert(cells, |i, j| geom.eng_cell(i, j));
     }
 
-    /// Sets the user's current piece to be type `ty` at row `i`, column `j`, rotation
-    /// `r`, with ghost piece shown at row `g`.
-    pub fn set_piece(&mut self, ty: PieceType, i: i16, j: i16, r: i32, g: i16) {
-        let ruleset = self.ruleset.as_ref();
-        let geom = &self.geom;
-        let cells = |i: i16| {
-            ruleset.coords(ty, r).map(move |(i_off, j_off)| {
+    /// Sets or clears the user's current piece. If given `Some((ty, i, j, r, g))`, set
+    /// piece type `ty` at row `i`, column `j`, rotation `r`, with ghost piece at row `g`.
+    pub fn set_piece(&mut self, piece: Option<(PieceType, i16, i16, i32, i16)>) {
+        self.piece.clear();
+        self.ghost.clear();
+        if let Some((ty, i, j, r, g)) = piece {
+            let ruleset = self.ruleset.as_ref();
+            let cells = |i: i16| {
+                ruleset.coords(ty, r).map(move |(i_off, j_off)| {
+                    let i = (i + i_off as i16) as u16;
+                    let j = (j + j_off as i16) as u16;
+                    ((i, j), ty)
+                })
+            };
+            let geom = &self.geom;
+            self.piece.insert(cells(i), |i, j| geom.main_cell(i, j));
+            self.ghost.insert(cells(g), |i, j| geom.main_cell(i, j));
+        }
+    }
+
+    /// Sets or clears the engine's suggested piece. If given `Some((ty, i, j, r))`, set
+    /// piece type `ty` at row `i`, column `j`, rotation `r`.
+    pub fn set_engine_piece(&mut self, piece: Option<(PieceType, i16, i16, i32)>) {
+        self.eng_ghost.clear();
+        if let Some((ty, i, j, r)) = piece {
+            let geom = &self.geom;
+            let cells = self.ruleset.coords(ty, r).map(move |(i_off, j_off)| {
                 let i = (i + i_off as i16) as u16;
                 let j = (j + j_off as i16) as u16;
                 ((i, j), ty)
-            })
-        };
-        self.piece.clear();
-        self.piece.insert(cells(i), |i, j| geom.main_cell(i, j));
-        self.ghost.clear();
-        self.ghost.insert(cells(g), |i, j| geom.main_cell(i, j));
-    }
-
-    /// Clears the user's current piece, so no piece or ghost is shown.
-    pub fn clear_piece(&mut self) {
-        self.piece.clear();
-        self.ghost.clear();
-    }
-
-    /// Sets the engine's suggested piece to be type `ty` at row `i`, column `j`, rotation
-    /// `r`.
-    pub fn set_engine_piece(&mut self, ty: PieceType, i: i16, j: i16, r: i32) {
-        let geom = &self.geom;
-        let cells = self.ruleset.coords(ty, r).map(move |(i_off, j_off)| {
-            let i = (i + i_off as i16) as u16;
-            let j = (j + j_off as i16) as u16;
-            ((i, j), ty)
-        });
-        self.eng_ghost.clear();
-        self.eng_ghost.insert(cells, |i, j| geom.eng_cell(i, j));
-    }
-
-    /// Clears the engine's suggested piece, so no piece is shown.
-    pub fn clear_engine_piece(&mut self) {
-        self.eng_ghost.clear();
-    }
-
-    /// Sets the rating shown for the user's current piece. If `rating` is
-    /// `Some((static_eval, score))`, indicates that the static evaluation after placing
-    /// the current piece is `static_eval`, and the score for the best sequence following
-    /// that placement is `score`.  If `rating` is `None`, indicates that the engine is
-    /// still computing the rating.
-    #[allow(unused)]
-    pub fn set_piece_rating(&mut self, rating: Option<(i64, i64)>) {
-        let (lbl0, lbl1, working) = &mut self.piece_rating;
-        if let Some((static_eval, score)) = rating {
-            lbl0.set(&format!("engine rating: {} ", score));
-            lbl1.set(&format!("static eval: {}", static_eval));
-            *working = true;
-        } else {
-            lbl0.clear();
-            lbl1.clear();
-            *working = false;
+            });
+            self.eng_ghost.insert(cells, |i, j| geom.eng_cell(i, j));
         }
     }
 
@@ -284,7 +285,7 @@ impl<'r> View<'r> {
     }
 
     /// Clears the engine suggestion information.
-    pub fn clear_engine_suggestion(&mut self) {
+    pub fn clear_engine_overlay(&mut self) {
         for lbl in self.eng_overlay.iter_mut() {
             lbl.clear();
         }
@@ -312,8 +313,46 @@ impl<'r> View<'r> {
     pub fn set_engine_disabled(&mut self) {
         self.eng_matrix.clear();
         self.eng_ghost.clear();
-        self.clear_engine_suggestion();
+        self.clear_engine_overlay();
         self.eng_status.set("engine not enabled");
+    }
+
+    pub fn disable_tree(&mut self) {
+        self.tree_sidebar = None;
+    }
+
+    pub fn enable_tree(&mut self) {
+        let _ = self.enable_tree_();
+    }
+
+    fn enable_tree_(&mut self) -> &mut TreeSidebar<'r> {
+        let geom = &mut self.geom;
+        self.tree_sidebar.get_or_insert_with(|| {
+            geom.tree_scroll = 0;
+            TreeSidebar::new()
+        })
+    }
+
+    pub fn set_tree_nodes(&mut self, iter: impl IntoIterator<Item = TreeNode>) {
+        self.enable_tree_().set_nodes(iter);
+    }
+
+    pub fn set_tree_hover(&mut self, idx: Option<usize>) {
+        self.enable_tree_()
+            .set_hover(idx.unwrap_or(std::usize::MAX));
+    }
+
+    pub fn set_tree_scroll(&mut self, scroll: i32) {
+        if self.tree_sidebar.is_some() {
+            self.geom.tree_scroll = scroll;
+        }
+    }
+
+    pub fn tree_scroll_bounds(&self) -> std::ops::Range<i32> {
+        match self.tree_sidebar.as_ref() {
+            Some(tree) => 0..tree.max_scroll(&self.geom),
+            None => 0..0,
+        }
     }
 
     /// Renders any labels whos text has recently been updated, and needs to be
@@ -330,10 +369,11 @@ impl<'r> View<'r> {
         for lbl in self.stats.iter_mut() {
             lbl.render(tc, hud_font, colors.text.0);
         }
-        for (hd, lns) in self.controls.iter_mut() {
-            hd.render(tc, hud_font_bold, colors.text.0);
+        for lns in self.help.iter_mut() {
+            let mut font = hud_font_bold; // header line is bold
             for ln in lns.iter_mut() {
-                ln.render(tc, hud_font, colors.text.0);
+                ln.render(tc, font, colors.text.0);
+                font = hud_font; // other lines are not bold
             }
         }
 
@@ -342,14 +382,6 @@ impl<'r> View<'r> {
         }
         self.eng_status.render(tc, hud_font_small, colors.text.1);
 
-        let piece_rating_color = if self.piece_rating.2 {
-            colors.text.0
-        } else {
-            colors.text.1
-        };
-        self.piece_rating.0.render(tc, hud_font, piece_rating_color);
-        self.piece_rating.1.render(tc, hud_font, piece_rating_color);
-
         let progress_font = &self.resources.progress_font;
         let progress_color = if self.progress.1 {
             colors.good_bad.0
@@ -357,6 +389,10 @@ impl<'r> View<'r> {
             colors.text.0
         };
         self.progress.0.render(tc, progress_font, progress_color);
+
+        if let Some(tree) = self.tree_sidebar.as_mut() {
+            tree.render_labels(colors, &self.resources, tc);
+        }
     }
 
     /// Paints this view onto SDL2 canvas `cv`.
@@ -393,6 +429,7 @@ impl<'r> View<'r> {
         // positions. `group` is the index of the current label group, and `line` is the
         // line number for the next label.
         let (mut group, mut line) = (0, 0);
+
         self.motd.paint(cv, self.geom.hud(group, line));
         line += 1;
         group += 1;
@@ -403,9 +440,7 @@ impl<'r> View<'r> {
         }
         group += 1;
 
-        for (hd, lns) in self.controls.iter() {
-            hd.paint(cv, self.geom.hud(group, line));
-            line += 1;
+        for lns in self.help.iter() {
             for ln in lns.iter() {
                 ln.paint(cv, self.geom.hud(group, line));
                 line += 1;
@@ -419,9 +454,77 @@ impl<'r> View<'r> {
         for (i, lbl) in self.eng_overlay.iter().enumerate() {
             lbl.paint(cv, self.geom.engine_overlay(i));
         }
-        self.piece_rating.0.paint(cv, self.geom.piece_rating(0));
-        self.piece_rating.1.paint(cv, self.geom.piece_rating(1));
         self.eng_status.paint(cv, self.geom.engine_status());
+
+        // draw tree sidebar
+        if let Some(tree) = self.tree_sidebar.as_ref() {
+            tree.paint(cv, &self.geom, &self.colors);
+        }
+    }
+
+    /// Poll incoming events from event pump `ep`. If an action is to be performed,
+    /// returns `Ok(Some(action))`. If the application should quit, returns
+    /// `Err(Quit)`. If no more actions are available, returns `Ok(None)`.
+    pub fn handle(&self, evt: sdl2::event::Event) -> Result<Option<Action>, Quit> {
+        use sdl2::{event::Event, mouse::MouseButton};
+        Ok(match evt {
+            Event::Quit { .. } => return Err(Quit),
+
+            // TODO: KeyUp events
+            Event::KeyDown {
+                keycode: Some(keycode),
+                keymod,
+                ..
+            } => self.controls.parse(keycode, keymod),
+
+            Event::MouseMotion { x, y, .. } => self.handle_mouse_motion((x as i32, y as i32)),
+
+            Event::MouseWheel { y, .. } => self.handle_mouse_scroll(y),
+
+            Event::MouseButtonDown {
+                x,
+                y,
+                mouse_btn: MouseButton::Left,
+                ..
+            } => self.handle_left_click((x as i32, y as i32)),
+
+            _ => None,
+        })
+    }
+
+    fn handle_mouse_motion(&self, pos: (i32, i32)) -> Option<Action> {
+        use crate::controls::TreeOp;
+        if let Some(tree) = self.tree_sidebar.as_ref() {
+            let entry = tree.entry_idx(&self.geom, pos);
+            if tree.hover() == entry {
+                return None;
+            }
+            Some(Action::Tree(match entry {
+                Some(idx) => TreeOp::OverEntry(idx),
+                None => TreeOp::Out,
+            }))
+        } else {
+            None
+        }
+    }
+
+    fn handle_mouse_scroll(&self, dy: i32) -> Option<Action> {
+        use crate::controls::TreeOp;
+        if self.tree_sidebar.is_some() {
+            Some(Action::Tree(TreeOp::ScrollBy(-dy * SCROLL_WHEEL_SPEED)))
+        } else {
+            None
+        }
+    }
+
+    fn handle_left_click(&self, pos: (i32, i32)) -> Option<Action> {
+        use crate::controls::TreeOp;
+        if let Some(tree) = self.tree_sidebar.as_ref() {
+            let entry = tree.entry_idx(&self.geom, pos);
+            entry.map(|idx| Action::Tree(TreeOp::ClickEntry(idx)))
+        } else {
+            None
+        }
     }
 }
 
@@ -560,6 +663,170 @@ impl<'a> Label<'a> {
     }
 }
 
+struct TreeSidebar<'r> {
+    nodes: Vec<TreeNode>,
+    labels: Vec<TreeNodeLabels<'r>>,
+    hover: usize,
+}
+
+struct TreeNodeLabels<'r> {
+    rating: Label<'r>,
+    count: Label<'r>,
+}
+
+const TREE_MAX_DEPTH: usize = 10;
+
+impl<'r> TreeSidebar<'r> {
+    fn new() -> Self {
+        Self {
+            nodes: vec![],
+            labels: vec![],
+            hover: std::usize::MAX,
+        }
+    }
+
+    fn entry_idx(&self, geom: &Geometry, pos: (i32, i32)) -> Option<usize> {
+        if let Some(idx) = geom.tree_node_entry_at(pos) {
+            if idx < self.nodes.len() {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    fn max_scroll(&self, geom: &Geometry) -> i32 {
+        let height = (self.nodes.len() as i32) * geom.tree_node_height;
+        std::cmp::max(0, height - geom.bottom)
+    }
+
+    fn set_nodes(&mut self, iter: impl IntoIterator<Item = TreeNode>) {
+        self.nodes.clear();
+        self.nodes.extend(iter);
+
+        let labels = &mut self.labels;
+        labels.resize_with(self.nodes.len(), TreeNodeLabels::new);
+        for (lbl, node) in labels.iter_mut().zip(self.nodes.iter()) {
+            lbl.set(node);
+        }
+    }
+
+    fn set_hover(&mut self, idx: usize) {
+        self.hover = idx;
+    }
+
+    fn hover(&self) -> Option<usize> {
+        if self.hover < self.nodes.len() {
+            Some(self.hover)
+        } else {
+            None
+        }
+    }
+
+    fn render_labels(
+        &mut self,
+        colors: &Colors,
+        resources: &Resources<'r>,
+        tc: &'r TextureCreator,
+    ) {
+        for lbl in self.labels.iter_mut() {
+            lbl.render(colors, resources, tc);
+        }
+    }
+
+    fn paint(&self, cv: &mut Canvas, geom: &Geometry, colors: &Colors) {
+        cv.set_draw_color(colors.grid_background.0);
+        cv.fill_rect(geom.tree_sidebar).unwrap();
+
+        // draw background for hovered item
+        if let Some(idx) = self.hover() {
+            cv.set_draw_color(colors.grid_background.1);
+            cv.fill_rect(geom.tree_node_entry(idx)).unwrap();
+        }
+
+        // draw tree branches
+        cv.set_draw_color(colors.background);
+        // `vertical[d]` contains range `i0..i1` if vertical line from `(i0,d)` to
+        // `(i1,d)` should be drawn
+        let mut vertical: [Option<Range<usize>>; TREE_MAX_DEPTH] = Default::default();
+        for (i, node) in self.nodes.iter().enumerate() {
+            let d = node.depth;
+            if d > 0 {
+                // update vertical line for parent
+                vertical[d - 1].get_or_insert((i - 1)..i).end = i;
+                // draw horizontal line
+                cv.draw_line(
+                    geom.tree_node_center((i, d - 1)),
+                    geom.tree_node_center((i, d)),
+                )
+                .unwrap();
+            }
+            // flush vertical lines for parent-of-parents
+            for d in d..TREE_MAX_DEPTH {
+                if let Some(v) = vertical[d].take() {
+                    cv.draw_line(
+                        geom.tree_node_center((v.start, d)),
+                        geom.tree_node_center((v.end, d)),
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        // flush remaining lines
+        for d in 0..TREE_MAX_DEPTH {
+            if let Some(v) = vertical[d].take() {
+                cv.draw_line(
+                    geom.tree_node_center((v.start, d)),
+                    geom.tree_node_center((v.end, d)),
+                )
+                .unwrap();
+            }
+        }
+
+        // draw node icons & labels
+        for (idx, node) in self.nodes.iter().enumerate() {
+            let loc = (idx, node.depth);
+            let color = colors.cell.get(&node.piece).unwrap();
+            let node_rect = geom.tree_node_icon(loc);
+            cv.set_draw_color(*color);
+            cv.fill_rect(node_rect).unwrap();
+            self.labels[idx].paint(cv, geom, loc);
+        }
+    }
+}
+
+impl<'r> TreeNodeLabels<'r> {
+    fn new() -> Self {
+        Self {
+            rating: Label::new(),
+            count: Label::new(),
+        }
+    }
+
+    fn set(&mut self, node: &TreeNode) {
+        use crate::util::text_fmt::*;
+        self.rating.set(&{
+            if node.rating == Some(node.best_rating) {
+                format!("{}", node.best_rating)
+            } else {
+                format!("{}\u{2192}{}", maybe(node.rating, "?"), node.best_rating)
+            }
+        });
+        self.count.set(&format!("{}", plural(node.count, "node")));
+    }
+
+    fn render(&mut self, colors: &Colors, resources: &Resources<'r>, tc: &'r TextureCreator) {
+        let font = &resources.hud_font_small_bold;
+        self.rating.render(tc, font, colors.text.0);
+        self.count.render(tc, font, colors.text.1);
+    }
+
+    fn paint(&self, cv: &mut Canvas, geom: &Geometry, loc: (usize, usize)) {
+        let (x_rate, x_cnt, y) = geom.tree_node_labels(loc, &self.count);
+        self.rating.paint(cv, (x_rate, y));
+        self.count.paint(cv, (x_cnt, y));
+    }
+}
+
 /// Caches geometry computations for the on-screen elements.
 #[derive(Clone)]
 struct Geometry {
@@ -574,6 +841,12 @@ struct Geometry {
     text_pad: i32,
     // text padding for small font
     text_pad_small: i32,
+    // height of entries in tree sidebar
+    tree_node_height: i32,
+    // padding around node icons in tree sidebar
+    tree_node_pad: i32,
+    // x offset between nodes at adjacent depths
+    tree_node_dx: i32,
     // position of the bottom of the window
     bottom: i32,
     // extent of the main matrix
@@ -584,6 +857,10 @@ struct Geometry {
     eng_matrix: Rect,
     // size of engine matrix cells
     eng_cell: u32,
+    // extent of the tree-view sidebar
+    tree_sidebar: Rect,
+    // scroll offset of tree-view
+    tree_scroll: i32,
 }
 
 impl Geometry {
@@ -596,13 +873,18 @@ impl Geometry {
             line_height: 19,
             line_height_small: 15,
             text_pad: 6,
-            text_pad_small: 3,
+            text_pad_small: 2,
+            tree_node_height: 20,
+            tree_node_pad: 2,
+            tree_node_dx: 25,
             // calculated on every resize
             bottom: 0,
             cell: 0,
             eng_cell: 0,
             matrix: Rect::new(0, 0, 0, 0),
             eng_matrix: Rect::new(0, 0, 0, 0),
+            tree_sidebar: Rect::new(0, 0, 0, 0),
+            tree_scroll: 0,
         };
         geom.set(win);
         geom
@@ -624,6 +906,10 @@ impl Geometry {
         let eng_x = main_x - (self.cell as i32) - eng_w as i32;
         let eng_y = main_y + main_h as i32 - eng_h as i32;
         self.eng_matrix = (eng_x, eng_y, eng_w, eng_h).into();
+
+        let tsb_w = win_w * 1 / 4;
+        let tsb_x = (win_w - tsb_w) as i32;
+        self.tree_sidebar = (tsb_x, 0, tsb_w, win_h).into();
     }
 
     fn cell(&self, x0: i32, y0: i32, size: u32, i: u16, j: u16) -> Rect {
@@ -674,13 +960,6 @@ impl Geometry {
         (x, y)
     }
 
-    fn piece_rating(&self, line: usize) -> (i32, i32) {
-        let x = self.matrix.left();
-        let mut y = self.matrix.bottom() + self.text_pad;
-        y += (line as i32) * self.line_height;
-        (x, y)
-    }
-
     fn engine_overlay(&self, line: usize) -> (i32, i32) {
         let x = self.eng_matrix.left() + self.text_pad_small;
         let mut y = self.eng_matrix.top() + self.text_pad_small;
@@ -692,6 +971,59 @@ impl Geometry {
         let x = self.text_pad;
         let y = self.bottom - self.line_height_small - self.text_pad;
         (x, y)
+    }
+
+    fn tree_origin(&self) -> (i32, i32) {
+        let x0 = self.tree_sidebar.left();
+        let y0 = self.tree_sidebar.top() - self.tree_scroll;
+        (x0, y0)
+    }
+
+    fn tree_node_entry(&self, idx: usize) -> Rect {
+        let (x, mut y) = self.tree_origin();
+        y += (idx as i32) * self.tree_node_height;
+        let w = self.tree_sidebar.width();
+        let h = self.tree_node_height as u32;
+        (x, y, w, h).into()
+    }
+
+    fn tree_node_entry_at(&self, (x, y): (i32, i32)) -> Option<usize> {
+        let (x0, y0) = self.tree_origin();
+        if x < x0 || y < y0 {
+            None
+        } else {
+            let idx = std::cmp::max(0, (y - y0) / self.tree_node_height);
+            Some(idx as usize)
+        }
+    }
+
+    fn tree_node_origin(&self, (idx, depth): (usize, usize)) -> (i32, i32) {
+        let (mut x, mut y) = self.tree_origin();
+        x += (depth as i32) * self.tree_node_dx;
+        y += (idx as i32) * self.tree_node_height;
+        (x, y)
+    }
+
+    fn tree_node_icon(&self, loc: (usize, usize)) -> Rect {
+        let (mut x, mut y) = self.tree_node_origin(loc);
+        x += self.tree_node_pad;
+        y += self.tree_node_pad;
+        let w = (self.tree_node_height - self.tree_node_pad * 2) as u32;
+        (x, y, w, w).into()
+    }
+
+    fn tree_node_center(&self, loc: (usize, usize)) -> Point {
+        let (x, y) = self.tree_node_origin(loc);
+        (x + self.tree_node_height / 2, y + self.tree_node_height / 2).into()
+    }
+
+    fn tree_node_labels(&self, loc: (usize, usize), count: &Label) -> (i32, i32, i32) {
+        let (mut x_rate, mut y) = self.tree_node_origin(loc);
+        y += self.text_pad_small;
+        x_rate += self.tree_node_height + self.text_pad_small;
+        let mut x_count = self.tree_sidebar.right();
+        x_count -= count.width as i32 + self.text_pad_small;
+        (x_rate, x_count, y)
     }
 }
 

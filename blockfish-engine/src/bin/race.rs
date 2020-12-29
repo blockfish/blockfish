@@ -55,7 +55,7 @@ impl Args {
 }
 
 struct Race {
-    ai_cfg: BFConfig,
+    ai: blockfish::AI,
     stacker: Stacker,
     ds_goal: Option<usize>,
     start_time: Instant,
@@ -73,8 +73,10 @@ impl Race {
     fn new(ai_cfg: BFConfig, game_cfg: BSConfig, rules: Ruleset) -> Self {
         let ds_goal = game_cfg.garbage.total_lines;
         let stacker = Stacker::new(rules.into(), game_cfg);
+        let mut ai = blockfish::AI::new(ai_cfg);
+        ai.set_suggestion_filter(blockfish::SuggestionFilter::GlobalBest);
         Self {
-            ai_cfg,
+            ai,
             stacker,
             ds_goal,
             start_time: Instant::now(),
@@ -109,11 +111,8 @@ impl Race {
 
     fn step(&mut self) {
         let snapshot = self.stacker.snapshot().expect("no snapshot");
-        let mut analysis = blockfish::AI::new(self.ai_cfg.clone()).analyze(snapshot);
-        analysis.set_trace_max_len(1);
-
-        let best_suggestion = analysis.min_by_key(|s| s.score).expect("no suggestions");
-        self.stacker.run(best_suggestion.inputs_prefix(0));
+        let suggestion = self.ai.analyze(snapshot).next().expect("no suggestions");
+        self.stacker.run(suggestion.inputs_prefix(0));
         let (_, garbage_cleared) = self.stacker.hard_drop();
         self.trace.push(self.ds() + garbage_cleared);
     }

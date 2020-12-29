@@ -128,6 +128,11 @@ impl Stacker {
         })
     }
 
+    /// Returns `(color, row, col, rot)` for the current piece's ghost, if any.
+    pub fn current_piece_ghost(&self) -> Option<(PieceType, i16, i16, i32)> {
+        self.current_piece().map(|(typ, _, j, r, g)| (typ, g, j, r))
+    }
+
     /// Returns the current piece type being held, if any.
     pub fn held(&self) -> Option<PieceType> {
         self.held

@@ -4,10 +4,11 @@ pub use sdl2::keyboard::{Keycode, Mod};
 
 pub const DEFAULT_BINDINGS: &[(Action, KeyStroke)] = {
     use Action::*;
-    use EngineOp::*;
+    use EngineOp::{Toggle as EngineToggle, *};
     use GameOp::{Undo, *};
     use KeyStroke::*;
     use Keycode::*;
+    use TreeOp::Toggle as TreeToggle;
     &[
         (Game(MoveLeft), Only(Left)),
         (Game(MoveRight), Only(Right)),
@@ -18,12 +19,13 @@ pub const DEFAULT_BINDINGS: &[(Action, KeyStroke)] = {
         (Game(HardDrop), Only(Space)),
         (Game(Reset), Control(R)),
         (Game(Undo), Control(Z)),
-        (Engine(Toggle), Control(E)),
+        (Engine(EngineToggle), Control(E)),
         (Engine(Next), Only(Tab)),
         (Engine(Prev), Control(Tab)),
         (Engine(StepForward), Control(F)),
         (Engine(StepBackward), Control(B)),
         (Engine(Goto), Only(Return)),
+        (Tree(TreeToggle), Only(Backquote)),
     ]
 };
 
@@ -31,6 +33,7 @@ pub const DEFAULT_BINDINGS: &[(Action, KeyStroke)] = {
 pub enum Action {
     Game(GameOp),
     Engine(EngineOp),
+    Tree(TreeOp),
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -60,6 +63,16 @@ pub enum EngineOp {
     Goto,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[allow(dead_code)]
+pub enum TreeOp {
+    Toggle,
+    Out,
+    OverEntry(usize),
+    ClickEntry(usize),
+    ScrollBy(i32),
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum KeyStroke {
     Only(Keycode),
@@ -86,6 +99,7 @@ impl std::fmt::Display for KeyStroke {
 
 /// Represents a controls configuration, which can be used to look up which `Action` is
 /// triggered by a given key press.
+#[derive(Clone)]
 pub struct Controls {
     from_keycode: HashMap<(Keycode, bool), Action>,
     from_action: HashMap<Action, KeyStroke>,
