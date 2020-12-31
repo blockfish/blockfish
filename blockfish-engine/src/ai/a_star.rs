@@ -36,10 +36,9 @@ impl<'s> Iterator for AStar<'s> {
     fn next(&mut self) -> Option<Node> {
         let node = self.nodes.pop()?.0;
         if !node.state().is_goal() {
-            let scoring = self.scoring;
             self.placements.set_state(node.state());
             for (idx, place) in (&mut self.placements).enumerate() {
-                let succ = node.successor(scoring, idx, &place);
+                let succ = node.successor(self.scoring, idx, &place);
                 self.nodes.push(AStarNode(succ));
             }
         }

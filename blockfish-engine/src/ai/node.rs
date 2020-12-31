@@ -1,6 +1,6 @@
 use super::{
     place::Place,
-    score::{penalty, score, ScoreParams},
+    score::{eval, penalty, ScoreParams},
     Snapshot,
 };
 use crate::{BasicMatrix, Color};
@@ -61,9 +61,9 @@ impl Node {
         succ.trace.push(idx as u8);
         succ.state.place(&place);
         succ.score = if succ.state.is_goal() {
-            -10000
+            (succ.depth() as i64) - 1000
         } else {
-            score(scoring, &succ.state.matrix)
+            eval(&succ.state.matrix).score(scoring)
         };
         succ.penalty = penalty(scoring, succ.depth());
         succ

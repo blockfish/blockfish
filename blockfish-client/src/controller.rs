@@ -106,7 +106,7 @@ impl<'v> Controller<'v> {
             self.trie.is_some(),
         ));
         if let Some(trie) = self.trie.as_mut() {
-            trie.reroot(self.stacker.clone());
+            trie.reroot(self.stacker.clone(), &self.ai_config.scoring);
         }
     }
 
@@ -558,6 +558,7 @@ impl From<blockfish::Suggestion> for Suggestion {
 }
 
 struct Trie {
+    score_params: blockfish::ScoreParams,
     nodes: Vec<TrieNode>,
     linear: Vec<TrieNodeId>,
     hover: Option<usize>,
@@ -568,6 +569,7 @@ struct TrieNode {
     key: Vec<blockfish::Input>,
     stacker: Stacker,
     depth: usize,
+    eval: Option<blockfish::Eval>,
     rating: Option<i64>,
     best_rating: i64,
     count: usize,
@@ -580,6 +582,7 @@ type TrieNodeId = usize;
 impl Trie {
     fn new() -> Self {
         Self {
+            score_params: blockfish::ScoreParams::default(),
             nodes: vec![],
             linear: vec![],
             hover: None,
@@ -592,13 +595,14 @@ impl Trie {
         self.linear.clear();
     }
 
-    fn reroot(&mut self, mut stacker: Stacker) {
+    fn reroot(&mut self, mut stacker: Stacker, params: &blockfish::ScoreParams) {
         stacker.freeze();
         stacker.reset_piece();
         let root = TrieNode::new(vec![], stacker, std::usize::MAX);
         self.nodes.clear();
         self.nodes.push(root);
         self.linearize();
+        self.score_params.clone_from(params);
     }
 
     fn set_hover(&mut self, hover: Option<usize>) {
@@ -620,11 +624,11 @@ impl Trie {
             let mut children = std::mem::take(&mut self[node_id].children);
             let child_id = children
                 .iter()
-                .find(|&&id| &self[id].key == prefix)
+                .find(|&&id| &*self[id].key == prefix)
                 .cloned();
             let child_id = child_id.unwrap_or_else(|| {
-                self.nodes
-                    .push(TrieNode::new(prefix.to_vec(), stacker.clone(), depth));
+                let node = TrieNode::new(prefix.to_vec(), stacker.clone(), depth);
+                self.nodes.push(node);
                 let id = self.nodes.len() - 1;
                 children.push(id);
                 id
@@ -641,7 +645,10 @@ impl Trie {
         }
 
         // fixup final node
+        self[node_id].eval = stacker.snapshot().as_ref().map(blockfish::static_eval);
         self[node_id].rating = Some(rating);
+        // re-build the linear tree repr
+        // TODO: optimization: dont linearize if the update changed an unexpanded node
         self.linearize();
     }
 
@@ -683,7 +690,11 @@ impl Trie {
             let preview = &self[hover_id].stacker;
             view.set_engine_matrix(preview.matrix());
             view.set_engine_piece(preview.current_piece_ghost());
-            view.clear_engine_overlay();
+            if let Some(eval) = self[hover_id].eval.as_ref() {
+                view.set_engine_overlay_score(eval, &self.score_params);
+            } else {
+                view.clear_engine_overlay();
+            }
         }
 
         let scroll_bounds = view.tree_scroll_bounds();
@@ -712,6 +723,7 @@ impl TrieNode {
             key,
             stacker,
             depth,
+            eval: None,
             rating: None,
             best_rating: std::i64::MAX,
             count: 0,

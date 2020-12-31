@@ -54,13 +54,24 @@ impl<'a> TryFrom<&'a [i64]> for ScoreParams {
     }
 }
 
-/// Computes the "score" for the given snapshot. Lower is better.
-///
-/// Note: used by A* to compute "h" value (remaining cost heuristic).
-pub fn score(params: &ScoreParams, matrix: &BasicMatrix) -> i64 {
-    (piece_estimate(matrix.clone()) as i64) * params.piece_estimate_factor
-        + (matrix.rows() as i64) * params.row_factor
-        + (i_dependencies(&matrix, 0..matrix.rows()).count() as i64) * params.i_dependency_factor
+// Evaluations
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Eval {
+    pub rows: u16,
+    pub piece_estimate: u16,
+    pub i_dependencies: u16,
+}
+
+impl Eval {
+    /// Computes the "score" based on this evaluation. Lower is better.
+    ///
+    /// Note: used by A* to compute "h" value (remaining cost heuristic).
+    pub fn score(&self, params: &ScoreParams) -> i64 {
+        params.row_factor * (self.rows as i64)
+            + params.piece_estimate_factor * (self.piece_estimate as i64)
+            + params.i_dependency_factor * (self.i_dependencies as i64)
+    }
 }
 
 /// Computes the "penalty" for placing the given number of pieces.
@@ -70,24 +81,32 @@ pub fn penalty(params: &ScoreParams, depth: usize) -> i64 {
     (depth as i64) * params.piece_penalty
 }
 
-/// Mystery's residue-based minimum piece estimate algorithm.
-fn piece_estimate(mut matrix: BasicMatrix) -> i64 {
-    // matrix.insert_empty_bottom_row();
+/// Evaluates a matrix, returning the different heuristic values.
+pub fn eval(matrix: &BasicMatrix) -> Eval {
+    Eval {
+        rows: matrix.rows(),
+        piece_estimate: piece_estimate(matrix.clone()),
+        i_dependencies: i_dependencies(&matrix, 0..matrix.rows()).count() as _,
+    }
+}
 
+/// Mystery's residue-based minimum piece estimate algorithm.
+fn piece_estimate(mut matrix: BasicMatrix) -> u16 {
     let mut pieces = 0;
     let mut depth = 0;
 
     let mut residue_buf = ResidueBuf::new();
     while let Some((i, res)) = covered_hole(&matrix, &mut residue_buf) {
         let rows = (i + 1)..res.end;
-        let pieces_to_fill: i64 = negative_spaces(&matrix, rows.clone())
-            .map(|area| ((area + 3) / 4) as i64)
+        let pieces_to_fill: u16 = negative_spaces(&matrix, rows.clone())
+            .map(|area| (area + 3) / 4)
             .sum();
 
         matrix.remove_rows(rows);
 
-        pieces += std::cmp::max(1, pieces_to_fill - depth);
         depth += 1;
+        pieces += pieces_to_fill.saturating_sub(depth);
+        pieces += 1;
     }
 
     pieces

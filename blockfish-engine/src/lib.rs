@@ -4,7 +4,9 @@ mod finesse;
 mod matrix;
 mod shape;
 
-pub use ai::{Analysis, Config, Snapshot, Suggestion, SuggestionFilter, AI};
+pub use ai::{
+    static_eval, Analysis, Config, Eval, ScoreParams, Snapshot, Suggestion, SuggestionFilter, AI,
+};
 pub use common::{Color, Input, Orientation};
 pub use matrix::BasicMatrix;
 

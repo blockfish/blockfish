@@ -29,7 +29,7 @@ pub struct View<'r> {
     stats: Vec<Label<'r>>,
     help: [Vec<Label<'r>>; 2],
     progress: (Label<'r>, bool),
-    eng_overlay: [Label<'r>; 3],
+    eng_overlay: [Label<'r>; 4],
     eng_status: Label<'r>,
     tree_sidebar: Option<TreeSidebar<'r>>,
 }
@@ -85,7 +85,7 @@ impl<'r> View<'r> {
             stats: Vec::with_capacity(4),
             progress: (Label::new(), false),
             eng_status: Label::new(),
-            eng_overlay: [Label::new(), Label::new(), Label::new()],
+            eng_overlay: [Label::new(), Label::new(), Label::new(), Label::new()],
             tree_sidebar: None,
         })
     }
@@ -270,18 +270,36 @@ impl<'r> View<'r> {
     /// `rating`: score at end of sequence
     pub fn set_engine_overlay(&mut self, seq: (usize, usize), pos: (usize, usize), rating: i64) {
         use std::fmt::Write;
-
         let mut line = format!("#{} of {}", seq.0 + 1, seq.1);
         self.eng_overlay[0].set(&line);
         line.clear();
-
         write!(&mut line, "rating {}", rating).unwrap();
         self.eng_overlay[1].set(&line);
         line.clear();
-
         write!(&mut line, "{}/{}", pos.0 + 1, pos.1).unwrap();
         self.eng_overlay[2].set(&line);
-        line.clear();
+        self.eng_overlay[3].clear();
+    }
+
+    /// Sets the information about the static evaluation of the current preview.
+    pub fn set_engine_overlay_score(
+        &mut self,
+        eval: &blockfish::Eval,
+        params: &blockfish::ScoreParams,
+    ) {
+        self.eng_overlay[0].set(&format!("eval:  {:<5}= ", eval.score(params)));
+        self.eng_overlay[1].set(&format!(
+            "rows   {:<2}*{:<2}+ ",
+            eval.rows, params.row_factor
+        ));
+        self.eng_overlay[2].set(&format!(
+            "pc est {:<2}*{:<2}+ ",
+            eval.piece_estimate, params.piece_estimate_factor
+        ));
+        self.eng_overlay[3].set(&format!(
+            "i deps {:<2}*{:<2}+ ",
+            eval.i_dependencies, params.i_dependency_factor
+        ));
     }
 
     /// Clears the engine suggestion information.

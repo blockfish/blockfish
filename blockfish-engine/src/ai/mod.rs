@@ -23,7 +23,7 @@ use thiserror::Error;
 
 // Config
 
-pub use score::ScoreParams;
+pub use score::{Eval, ScoreParams};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Config {
@@ -401,6 +401,11 @@ fn reconstruct_traces_from(
             state.place(&pl);
         }
     }
+}
+
+/// Performs the static analysis function on a snapshot.
+pub fn static_eval(snapshot: &Snapshot) -> Eval {
+    score::eval(&snapshot.matrix)
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////
