@@ -273,6 +273,19 @@ impl Matrix {
         Matrix { cols, lines }
     }
 
+    fn set_from_strings(&mut self, strs: &[&str]) {
+        self.lines.clear();
+        for &s in strs.iter() {
+            let mut ln = Line::new(self.cols);
+            for (j, ch) in s.chars().enumerate() {
+                if ch != ' ' {
+                    ln.set(j as u16, ch);
+                }
+            }
+            self.lines.push(ln);
+        }
+    }
+
     /// Returns the cell at coordinate `(i, j)`, if present.
     fn get(&self, (i, j): (i16, i16)) -> Option<CellColor> {
         if i < 0 || j < 0 || j >= self.cols as i16 {
