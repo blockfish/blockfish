@@ -78,6 +78,23 @@ impl Stacker {
         stacker
     }
 
+    pub fn with_data(rules: Rc<Ruleset>, matrix: &[&str], queue: &str, hold: char) -> Self {
+        let mut stacker = Self::new(
+            rules,
+            Config {
+                garbage: NO_GARBAGE,
+                prng_seed: None,
+            },
+        );
+        stacker.matrix.set_from_strings(matrix);
+        stacker.queue.set_from_string(queue);
+        if hold != ' ' {
+            stacker.held = Some(hold);
+        }
+        stacker.spawn_from_queue();
+        stacker
+    }
+
     /// Returns the ruleset used by this stacker.
     pub fn ruleset(&self) -> &Rc<Ruleset> {
         &self.rules
@@ -538,6 +555,11 @@ impl BagRandomizer {
         bag.sort(); // prevent us from getting fucked by nondeterminism :(
         let queue = Vec::with_capacity(bag.len() * 2);
         Self { bag, queue }
+    }
+
+    fn set_from_string(&mut self, s: &str) {
+        self.queue.clear();
+        self.queue.extend(s.chars());
     }
 
     fn refill(&mut self, rng: &mut impl RngCore, n: usize) {
