@@ -1,0 +1,26 @@
+{
+    "game": {
+        "left": "left",
+        "right": "right",
+        "ccw": "z",
+        "cw": "x",
+        "hold": "shift",
+        "sd": "down",
+        "hd": "space",
+        "reset": "C-r",
+        "undo": "C-z"
+    },
+    "engine": {
+        "toggle": "C-e",
+        "next": "tab",
+        "prev": "C-tab",
+        "forward": "C-f",
+        "backward": "C-b",
+        "goto": "return"
+    },
+    "handling": {
+        "autoplay": [800, 400],
+        "das": 200,
+        "arr": 25
+    }
+}

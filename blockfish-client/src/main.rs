@@ -3,6 +3,8 @@
 mod controller;
 mod controls;
 mod resources;
+mod theme;
+mod timer;
 mod util;
 mod view;
 
@@ -14,6 +16,8 @@ use thiserror::Error;
 
 static VERSION: &'static str = "DEVELOPMENT BUILD";
 
+const DEFAULT_CONFIG_DIR: &str = "./config";
+
 // Error handling
 #[derive(Debug, Error)]
 enum Error {
@@ -21,6 +25,8 @@ enum Error {
     Sdl(String),
     #[error("failed to load resources")]
     Resources(#[from] resources::ResourceLoadError),
+    #[error("failed to parse {0} config: {1}")]
+    ParseConfig(&'static str, serde_json::Error),
 }
 
 fn sdl_error(e: impl std::fmt::Display) -> Error {
@@ -34,6 +40,9 @@ fn sdl_error(e: impl std::fmt::Display) -> Error {
 struct Args {
     #[argh(positional)]
     goal: Option<Goal>,
+    /// configuration directory
+    #[argh(option, short = 'c')]
+    config_dir: Option<std::path::PathBuf>,
     /// garbage level, defaults to 9
     #[argh(option, short = 'g')]
     garbage: Option<usize>,
@@ -126,13 +135,13 @@ pub fn main() {
 
 // Entry point
 
-fn entry(args: Args) -> Result<()> {
+fn entry(mut args: Args) -> Result<()> {
+    // init subsystems
     let sdl = sdl2::init().map_err(sdl_error)?;
     let sdl_video = sdl.video().map_err(sdl_error)?;
-
     let ttf = sdl2::ttf::init().map_err(sdl_error)?;
-    let resources = resources::Resources::load(&ttf)?;
 
+    // create window
     let mut canvas = sdl_video
         .window("Blockfish", view::DEFAULT_SIZE.0, view::DEFAULT_SIZE.1)
         .position_centered()
@@ -143,26 +152,68 @@ fn entry(args: Args) -> Result<()> {
         .build()
         .map_err(sdl_error)?;
 
+    // load resources
+    let resources = resources::Resources::load(&ttf)?;
+
+    // more necessary init
     let mut events = sdl.event_pump().map_err(sdl_error)?;
     let texture_creator = canvas.texture_creator();
 
+    // load config files
+    let config_dir = args
+        .config_dir
+        .take()
+        .unwrap_or_else(|| DEFAULT_CONFIG_DIR.into());
+
+    let controls = match std::fs::File::open(config_dir.join("controls.json")) {
+        Ok(f) => match serde_json::from_reader(f) {
+            Ok(cfg) => cfg,
+            Err(e) => return Err(Error::ParseConfig("controls", e)),
+        },
+        Err(_) => {
+            log::warn!("controls file not found; using defaults.");
+            controls::Controls::default()
+        }
+    };
+
+    let theme = match std::fs::File::open(config_dir.join("theme.json")) {
+        Ok(f) => match serde_json::from_reader(f) {
+            Ok(cfg) => cfg,
+            Err(e) => return Err(Error::ParseConfig("theme", e)),
+        },
+        Err(_) => {
+            log::warn!("theme file not found; using default.");
+            theme::Theme::default()
+        }
+    };
+
+    // build game state, view and controller
     let rules = std::rc::Rc::new(Ruleset::guideline());
-    let mut ctl = controller::Controller::new(
-        block_stacker::Stacker::new(rules.clone(), args.game_config()),
-        view::View::new(resources, rules, controls::Controls::default(), VERSION),
-        args.ai_config(),
-    );
+    let stacker = block_stacker::Stacker::new(rules.clone(), args.game_config());
+    let mut tmr = timer::Timer::new(controls.handling());
+    let view = view::View::new(resources, rules, controls, &theme, VERSION);
+    let mut ctl = controller::Controller::new(stacker, view, args.ai_config());
 
     loop {
+        // poll user input events
+        tmr.update();
         for evt in events.poll_iter() {
-            match ctl.view().handle(evt) {
+            match ctl.view().handle(evt, &mut tmr) {
                 Err(view::Quit) => return Ok(()),
                 Ok(Some(action)) => ctl.handle(action),
                 Ok(None) => {}
             }
         }
 
+        // poll time based events
+        while let Some(action) = tmr.poll() {
+            ctl.handle(action);
+        }
+
+        // poll for engine progress
         ctl.poll_engine();
+
+        // render and present
         ctl.view_mut().render_labels(&texture_creator);
         ctl.view().paint(&mut canvas);
         canvas.present();

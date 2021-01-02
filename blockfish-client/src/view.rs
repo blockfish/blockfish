@@ -1,6 +1,8 @@
 use crate::{
-    controls::{Action, Controls},
+    controls::{self, Action, Controls},
     resources::Resources,
+    theme::{Theme, Colors},
+    timer::Timer,
 };
 use block_stacker::{CellColor, PieceType, Ruleset};
 use sdl2::{pixels::Color, rect::Point, rect::Rect, render::Texture};
@@ -58,6 +60,7 @@ impl<'r> View<'r> {
         resources: Resources<'r>,
         ruleset: Rc<Ruleset>,
         controls: Controls,
+        theme: &Theme,
         version_string: &str,
     ) -> Box<Self> {
         let rows = ruleset.visible_rows as u16;
@@ -74,7 +77,7 @@ impl<'r> View<'r> {
             controls,
             motd,
             help,
-            colors: Colors::dark_theme(),
+            colors: theme.to_colors(),
             geom: Geometry::new(rows, cols, DEFAULT_SIZE),
             queue: Cells::new(None),
             matrix: Cells::new(Some(rows)),
@@ -480,20 +483,25 @@ impl<'r> View<'r> {
         }
     }
 
-    /// Poll incoming events from event pump `ep`. If an action is to be performed,
-    /// returns `Ok(Some(action))`. If the application should quit, returns
-    /// `Err(Quit)`. If no more actions are available, returns `Ok(None)`.
-    pub fn handle(&self, evt: sdl2::event::Event) -> Result<Option<Action>, Quit> {
+    /// Handle SDL event `evt`. If an action should be performed as a result, returns
+    /// `Ok(Some(action))`. If the application should quit, returns `Err(Quit)`. If no
+    /// more actions are available, returns `Ok(None)`.
+    pub fn handle(&self, evt: sdl2::event::Event, tmr: &mut Timer) -> Result<Option<Action>, Quit> {
         use sdl2::{event::Event, mouse::MouseButton};
         Ok(match evt {
             Event::Quit { .. } => return Err(Quit),
 
-            // TODO: KeyUp events
             Event::KeyDown {
                 keycode: Some(keycode),
                 keymod,
                 ..
-            } => self.controls.parse(keycode, keymod),
+            } => self.handle_key_down(keycode, keymod, tmr),
+
+            Event::KeyUp {
+                keycode: Some(keycode),
+                keymod,
+                ..
+            } => self.handle_key_up(keycode, keymod, tmr),
 
             Event::MouseMotion { x, y, .. } => self.handle_mouse_motion((x as i32, y as i32)),
 
@@ -510,39 +518,77 @@ impl<'r> View<'r> {
         })
     }
 
-    fn handle_mouse_motion(&self, pos: (i32, i32)) -> Option<Action> {
-        use crate::controls::TreeOp;
-        if let Some(tree) = self.tree_sidebar.as_ref() {
-            let entry = tree.entry_idx(&self.geom, pos);
-            if tree.hover() == entry {
-                return None;
+    fn handle_key_down(
+        &self,
+        keycode: sdl2::keyboard::Keycode,
+        keymod: sdl2::keyboard::Mod,
+        tmr: &mut Timer,
+    ) -> Option<Action> {
+        let action = self.controls.parse(keycode, keymod);
+        match action {
+            Some(Action::Engine(controls::EngineOp::Goto)) => {
+                if tmr.begin_autoplay() {
+                    action
+                } else {
+                    // autoplay has already been activated so don't trigger further Goto
+                    // actions.  this would usually happen due to your system's DAS
+                    // triggering multiple key presses.
+                    None
+                }
             }
-            Some(Action::Tree(match entry {
-                Some(idx) => TreeOp::OverEntry(idx),
-                None => TreeOp::Out,
-            }))
-        } else {
-            None
+
+            Some(Action::Game(op)) if op.can_das() => {
+                if tmr.begin_autoshift(op) {
+                    action
+                } else {
+                    // similar as comment above; supress system DAS triggers.
+                    None
+                }
+            }
+
+            _ => action,
         }
+    }
+
+    fn handle_key_up(
+        &self,
+        keycode: sdl2::keyboard::Keycode,
+        keymod: sdl2::keyboard::Mod,
+        tmr: &mut Timer,
+    ) -> Option<Action> {
+        let action = self.controls.parse(keycode, keymod);
+        match action {
+            Some(Action::Engine(controls::EngineOp::Goto)) => tmr.end_autoplay(),
+            Some(Action::Game(op)) => tmr.end_autoshift(op),
+            _ => {}
+        }
+        None
+    }
+
+    fn handle_mouse_motion(&self, pos: (i32, i32)) -> Option<Action> {
+        let tree = self.tree_sidebar.as_ref()?;
+        let idx = tree.entry_idx(&self.geom, pos);
+        if tree.hover() == idx {
+            return None;
+        }
+        let op = match idx {
+            Some(idx) => controls::TreeOp::OverEntry(idx),
+            None => controls::TreeOp::Out,
+        };
+        Some(Action::Tree(op))
     }
 
     fn handle_mouse_scroll(&self, dy: i32) -> Option<Action> {
-        use crate::controls::TreeOp;
-        if self.tree_sidebar.is_some() {
-            Some(Action::Tree(TreeOp::ScrollBy(-dy * SCROLL_WHEEL_SPEED)))
-        } else {
-            None
-        }
+        let _tree = self.tree_sidebar.as_ref()?;
+        let op = controls::TreeOp::ScrollBy(-dy * SCROLL_WHEEL_SPEED);
+        Some(Action::Tree(op))
     }
 
     fn handle_left_click(&self, pos: (i32, i32)) -> Option<Action> {
-        use crate::controls::TreeOp;
-        if let Some(tree) = self.tree_sidebar.as_ref() {
-            let entry = tree.entry_idx(&self.geom, pos);
-            entry.map(|idx| Action::Tree(TreeOp::ClickEntry(idx)))
-        } else {
-            None
-        }
+        let tree = self.tree_sidebar.as_ref()?;
+        let idx = tree.entry_idx(&self.geom, pos)?;
+        let op = controls::TreeOp::ClickEntry(idx);
+        Some(Action::Tree(op))
     }
 }
 
@@ -1042,44 +1088,5 @@ impl Geometry {
         let mut x_count = self.tree_sidebar.right();
         x_count -= count.width as i32 + self.text_pad_small;
         (x_rate, x_count, y)
-    }
-}
-
-/// Stores the colors to use for a particular theme.
-struct Colors {
-    background: Color,
-    grid_background: (Color, Color),
-    text: (Color, Color),
-    good_bad: (Color, Color),
-    cell: HashMap<CellColor, Color>,
-}
-
-impl Colors {
-    fn dark_theme() -> Self {
-        let fmt_rgb24 = {
-            use sdl2::pixels::{PixelFormat, PixelFormatEnum};
-            use std::convert::TryFrom;
-            PixelFormat::try_from(PixelFormatEnum::RGB888).unwrap()
-        };
-        let rgb24 = |v| Color::from_u32(&fmt_rgb24, v);
-
-        let mut cell = HashMap::new();
-        cell.insert('G', rgb24(0x888888));
-        cell.insert('H', rgb24(0x666666));
-        cell.insert('L', rgb24(0xff9900));
-        cell.insert('O', rgb24(0xffff00));
-        cell.insert('I', rgb24(0x00ffff));
-        cell.insert('J', rgb24(0x0022ff));
-        cell.insert('S', rgb24(0x00ff00));
-        cell.insert('Z', rgb24(0xff0000));
-        cell.insert('T', rgb24(0x990099));
-
-        Self {
-            background: rgb24(0x2e2e2e),
-            grid_background: (rgb24(0), rgb24(0x222222)),
-            text: (rgb24(0xeeeeee), rgb24(0x888888)),
-            good_bad: (rgb24(0x55ff55), rgb24(0xff3333)),
-            cell,
-        }
     }
 }

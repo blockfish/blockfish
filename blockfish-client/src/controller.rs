@@ -141,6 +141,13 @@ impl<'v> Controller<'v> {
         self.progress = progress;
     }
 
+    /// Hard drops the current piece and updates `progress` as a result.
+    fn hard_drop(&mut self) {
+        let (lc, ds) = self.stacker.hard_drop();
+        let cc = self.stacker.is_matrix_colorless();
+        self.progress.incr(lc, ds, cc);
+    }
+
     /// Handles the user action `action`.
     pub fn handle(&mut self, action: Action) {
         match action {
@@ -178,9 +185,7 @@ impl<'v> Controller<'v> {
             }
             GameOp::HardDrop => {
                 self.undo_save();
-                let (lc, ds) = self.stacker.hard_drop();
-                let cc = self.stacker.is_matrix_colorless();
-                self.progress.incr(lc, ds, cc);
+                self.hard_drop();
                 upd |= Update::STACKER;
             }
             GameOp::Reset => {
@@ -228,33 +233,42 @@ impl<'v> Controller<'v> {
     /// Handles an engine related user action, when engine is enabled. This function is
     /// responsible for setting `self.engine` before returning.
     fn handle_engine_op_enabled(&mut self, op: EngineOp, mut eng: Engine) {
+        let mut upd = Update::empty();
         match op {
             EngineOp::Toggle => {
+                upd |= Update::ENGINE;
                 self.disable_engine();
-                self.update_view(Update::ENGINE);
             }
             EngineOp::Next | EngineOp::Prev => {
                 let delta = if op == EngineOp::Prev { -1 } else { 1 };
                 eng.select(delta, 0);
+                upd |= Update::AI;
                 self.engine = Some(eng);
-                self.update_view(Update::AI);
-            }
-            EngineOp::Goto => {
-                // TODO: maybe this should be a GameOp? since it exclusively affects .stacker
-                //       and not .engine
-                let updated = eng.go_to_selection(&mut self.stacker);
-                self.engine = Some(eng);
-                if updated {
-                    self.update_view(Update::STACKER);
-                }
             }
             EngineOp::StepForward | EngineOp::StepBackward => {
                 let step = if op == EngineOp::StepBackward { -1 } else { 1 };
                 eng.select(0, step);
+                upd |= Update::AI;
                 self.engine = Some(eng);
-                self.update_view(Update::AI);
+            }
+            EngineOp::Goto => {
+                if eng.go_to_selection(&mut self.stacker) {
+                    upd |= Update::STACKER;
+                }
+                self.engine = Some(eng);
+            }
+            EngineOp::AutoPlay => {
+                if eng.go_to_selection(&mut self.stacker) {
+                    self.undo_save();
+                    self.hard_drop();
+                    upd |= Update::STACKER | Update::ENGINE;
+                    self.consult_engine();
+                } else {
+                    self.engine = Some(eng);
+                }
             }
         }
+        self.update_view(upd);
     }
 
     /// Handles an tree related user action, when tree is enabled. This function is
