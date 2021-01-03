@@ -4,6 +4,9 @@ version = "0.1.0"
 authors = ["iitalics <iitalics@gmail.com>"]
 edition = "2018"
 
+[features]
+default = []
+
 [dependencies]
 sdl2 = { version = "0.34", features = ["ttf"] }
 thiserror = "1.0"
@@ -13,6 +16,7 @@ argh = "0.1"
 bitflags = "^1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+msgbox = { version = "0.6", optional = true }
 
 [dependencies.blockfish]
 path = "../blockfish-engine"

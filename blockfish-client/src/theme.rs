@@ -5,35 +5,38 @@ use thiserror::Error;
 
 use block_stacker::CellColor;
 
-/// Stores the colors to use for a particular theme.
-pub struct Colors {
-    pub background: Color,
-    pub grid_background: (Color, Color),
-    pub text: (Color, Color),
-    pub good_bad: (Color, Color),
-    pub cell: HashMap<CellColor, Color>,
-}
-
-/// A specification of a theme.
+/// A specification of a theme (mainly a deserialization format).
 #[derive(Clone, Debug, Deserialize)]
 pub struct Theme {
+    /// Main background color.
     bg: HexColor,
+    /// Text colors.
     text: TextTheme,
+    /// Matrix colors.
     matrix: MatrixTheme,
+    /// Mino colors.
     mino: MinoTheme,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct MatrixTheme {
+    /// Primary checkerboard background color (top-left cell color).
     bg: HexColor,
+    /// Secondary checkerboard background color.
     alt: HexColor,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct TextTheme {
+    /// Primary text color, for most text on-screen.
     primary: HexColor,
+    /// Secondary text color, for some other text.
     secondary: HexColor,
+    /// "Good" color, for indicating success.
     good: HexColor,
+    /// "Bad" color, for indicating failure.
+    ///
+    /// NOTE: THIS COLOR IS NOT USED ANYWHERE ATM.
     bad: HexColor,
 }
 
@@ -52,6 +55,7 @@ struct MinoTheme {
 }
 
 impl Theme {
+    /// Convert this theme specification into SDL2 `Color`s that can be used for drawing.
     pub fn to_colors(&self) -> Colors {
         use std::convert::TryFrom;
         let rgb24 = PixelFormat::try_from(sdl2::pixels::PixelFormatEnum::RGB888).unwrap();
@@ -80,6 +84,7 @@ impl Theme {
     }
 }
 
+/// Represents a parsed hex-color, i.e. `#ff0080`.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub struct HexColor(u32);
 
@@ -116,12 +121,22 @@ impl<'de> Deserialize<'de> for HexColor {
     }
 }
 
-static DEFAULT_THEME: &[u8] = include_bytes!("../../support/themes/dark.json");
+static DEFAULT_THEME: &[u8] = include_bytes!("../../support/themes/jstris.json");
 
 impl Default for Theme {
     fn default() -> Self {
         serde_json::from_slice(DEFAULT_THEME).expect("BUG: default theme is malformed!")
     }
+}
+
+/// Represents the colors present in a theme, in particular for use by SDL graphics
+/// operations.
+pub struct Colors {
+    pub background: Color,
+    pub grid_background: (Color, Color),
+    pub text: (Color, Color),
+    pub good_bad: (Color, Color),
+    pub cell: HashMap<CellColor, Color>,
 }
 
 #[cfg(test)]

@@ -114,9 +114,12 @@ fn c_prefix(s: &str) -> bool {
 /// triggered by a given key press, as well as timing values for handling.
 #[derive(Clone)]
 pub struct Controls {
+    /// `(keycode, requires_ctrl_mod)` => `action` mapping.
     from_keycode: HashMap<(Keycode, bool), Action>,
+    /// `action` => `binding` mapping.
     from_action: HashMap<Action, KeyStroke>,
-    handling: Handling,
+    /// Handling settings.
+    pub handling: Handling,
 }
 
 impl Controls {
@@ -131,6 +134,11 @@ impl Controls {
             match ks {
                 KeyStroke::Only(kc) => {
                     from_keycode.insert((kc, false), action);
+                    if kc == Keycode::RCtrl || kc == Keycode::LCtrl {
+                        // rctrl/lctrl needs entries for both with & without ctrl mod,
+                        // since the keys are themselves ctrl!
+                        from_keycode.insert((kc, true), action);
+                    }
                 }
                 KeyStroke::Control(kc) => {
                     from_keycode.insert((kc, true), action);
@@ -158,10 +166,6 @@ impl Controls {
     pub fn parse(&self, keycode: Keycode, keymod: Mod) -> Option<Action> {
         let control = keymod.contains(Mod::LCTRLMOD) || keymod.contains(Mod::RCTRLMOD);
         self.from_keycode.get(&(keycode, control)).cloned()
-    }
-
-    pub fn handling(&self) -> Handling {
-        self.handling.clone()
     }
 }
 

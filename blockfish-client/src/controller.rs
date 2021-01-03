@@ -3,18 +3,18 @@ use crate::{
     view::View,
 };
 use block_stacker::Stacker;
-use blockfish::{Config as BFConfig, StackerExt as _};
+use blockfish::{StackerExt as _, AI};
 
 use bitflags::bitflags;
 
 /// Controls a view according to changes in a `Stacker` state, incoming
 /// engine suggestions, and user actions.
 pub struct Controller<'v> {
-    view: Box<View<'v>>,
+    ai: AI,
+    view: View<'v>,
     stacker: Stacker,
     progress: Progress,
     undo_list: Vec<(Stacker, Progress)>,
-    ai_config: BFConfig,
     engine: Option<Engine>,
     trie: Option<Trie>,
 }
@@ -35,10 +35,10 @@ bitflags! {
 
 impl<'v> Controller<'v> {
     /// Constructs a new `Controller`.
-    pub fn new(stacker: Stacker, view: Box<View<'v>>, ai_config: BFConfig) -> Self {
+    pub fn new(ai: AI, view: View<'v>, stacker: Stacker) -> Self {
         let mut ctl = Self {
+            ai,
             view,
-            ai_config,
             stacker,
             trie: None,
             undo_list: Vec::with_capacity(100),
@@ -54,10 +54,6 @@ impl<'v> Controller<'v> {
 
     pub fn view(&self) -> &View<'v> {
         &self.view
-    }
-
-    pub fn view_mut(&mut self) -> &mut View<'v> {
-        &mut self.view
     }
 
     fn update_view(&mut self, upd: Update) {
@@ -89,10 +85,10 @@ impl<'v> Controller<'v> {
         }
         if upd.contains(Update::TRIE) {
             if let Some(trie) = self.trie.as_mut() {
-                self.view.enable_tree();
+                self.view.set_tree_enabled();
                 trie.update_view(&mut self.view);
             } else {
-                self.view.disable_tree();
+                self.view.set_tree_disabled();
             }
         }
     }
@@ -100,14 +96,19 @@ impl<'v> Controller<'v> {
     /// Ends the previous engine process and starts an analysis of the current stacker
     /// state.
     fn consult_engine(&mut self) {
-        self.engine = Some(Engine::new(
-            self.ai_config.clone(),
-            self.stacker.clone(),
-            self.trie.is_some(),
-        ));
         if let Some(trie) = self.trie.as_mut() {
-            trie.reroot(self.stacker.clone(), &self.ai_config.scoring);
+            // change suggestion filter so the trie sees more of the analysis than just
+            // the best moves.
+            self.ai
+                .set_suggestion_filter(blockfish::SuggestionFilter::All);
+            trie.reroot(self.stacker.clone(), &self.ai.config().scoring);
+        } else {
+            self.ai
+                .set_suggestion_filter(blockfish::SuggestionFilter::LocalBest);
         }
+
+        // start analysis
+        self.engine = Some(Engine::new(&mut self.ai, self.stacker.clone()));
     }
 
     /// Disables the engine
@@ -271,8 +272,7 @@ impl<'v> Controller<'v> {
         self.update_view(upd);
     }
 
-    /// Handles an tree related user action, when tree is enabled. This function is
-    /// responsible for setting `self.trie` before returning.
+    /// Handles a tree related user action.
     fn handle_tree_op(&mut self, op: TreeOp) {
         if let Some(trie) = self.trie.take() {
             self.handle_tree_op_enabled(op, trie);
@@ -287,7 +287,7 @@ impl<'v> Controller<'v> {
         }
     }
 
-    /// Handles an tree related user action, when tree is enabled. This function is
+    /// Handles a tree related user action, when tree is enabled. This function is
     /// responsible for setting `self.trie` before returning.
     fn handle_tree_op_enabled(&mut self, op: TreeOp, mut trie: Trie) {
         match op {
@@ -330,7 +330,7 @@ struct Progress {
 }
 
 impl Progress {
-    /// Constructs a new `Progress` represented the very beginning of a race (no pieces
+    /// Constructs a new `Progress` representing the very beginning of a race (no pieces
     /// placed).
     fn new() -> Self {
         Self {
@@ -355,8 +355,8 @@ impl Progress {
     }
 }
 
-/// Holds a handle to a Blockfish AI process, the top suggestions produced by that
-/// process, and the current suggestion being selected by the user.
+/// Holds a handle to a Blockfish analysis, the top suggestions produced by that process,
+/// and the current suggestion being selected by the user.
 struct Engine {
     start_time: std::time::Instant,
     params: String,
@@ -376,28 +376,14 @@ struct Selection {
 }
 
 impl Engine {
-    /// Constructs a new `Engine` by starting a new Blockfish process with configuration
-    /// parameters `config`, starting at the stacker state `source`. If `collect_all` is
-    /// `true`, then all suggestions will be collected. Otherwise only the ones that win
-    /// their individual branches. The latter is faster but the former is better for
-    /// diagnostics (ie. when the tree sidebar is visible).
-    fn new(config: BFConfig, mut source: Stacker, collect_all: bool) -> Self {
+    /// Constructs a new `Engine` using Blockfish instance `AI`. Uses initial stacker
+    /// state `source` to kick off the analysis.
+    fn new(ai: &mut AI, mut source: Stacker) -> Self {
+        let params = format!("{}", ai.config());
         source.reset_piece();
-        let params = format!("{}", config);
         Self {
             start_time: std::time::Instant::now(),
-            ai: match source.snapshot() {
-                Some(ss) => {
-                    let mut ai = blockfish::AI::new(config);
-                    ai.set_suggestion_filter(if collect_all {
-                        blockfish::SuggestionFilter::All
-                    } else {
-                        blockfish::SuggestionFilter::LocalBest
-                    });
-                    Some(ai.analyze(ss))
-                }
-                None => None,
-            },
+            ai: source.snapshot().map(|ss| ai.analyze(ss)),
             suggestions: vec![],
             selection: None,
             stats: None,
@@ -711,9 +697,8 @@ impl Trie {
             }
         }
 
-        let scroll_bounds = view.tree_scroll_bounds();
-        self.scroll = std::cmp::max(scroll_bounds.start, self.scroll);
-        self.scroll = std::cmp::min(scroll_bounds.end, self.scroll);
+        let (scroll_min, scroll_max) = view.tree_scroll_bounds().into_inner();
+        self.scroll = std::cmp::min(std::cmp::max(self.scroll, scroll_min), scroll_max);
         view.set_tree_scroll(self.scroll);
     }
 }

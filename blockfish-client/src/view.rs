@@ -1,7 +1,7 @@
 use crate::{
     controls::{self, Action, Controls},
     resources::Resources,
-    theme::{Theme, Colors},
+    theme::{Colors, Theme},
     timer::Timer,
 };
 use block_stacker::{CellColor, PieceType, Ruleset};
@@ -36,6 +36,7 @@ pub struct View<'r> {
     tree_sidebar: Option<TreeSidebar<'r>>,
 }
 
+/// Data for entries in the tree sidebar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeNode {
     pub piece: PieceType,
@@ -45,6 +46,10 @@ pub struct TreeNode {
     pub best_rating: i64,
 }
 
+/// Represents window close "event".
+///
+/// NOTE: used in `Err` return values in `View::handle`, but `Quit` is not really an
+/// error, just a signal to close the application.
 #[derive(Copy, Clone, Debug)]
 pub struct Quit;
 
@@ -62,7 +67,7 @@ impl<'r> View<'r> {
         controls: Controls,
         theme: &Theme,
         version_string: &str,
-    ) -> Box<Self> {
+    ) -> Self {
         let rows = ruleset.visible_rows as u16;
         let cols = ruleset.cols as u16;
 
@@ -71,7 +76,7 @@ impl<'r> View<'r> {
         Self::set_motd(&mut motd, version_string);
         Self::set_help_labels_controls(&mut help, &controls);
 
-        Box::new(Self {
+        Self {
             resources,
             ruleset,
             controls,
@@ -90,13 +95,16 @@ impl<'r> View<'r> {
             eng_status: Label::new(),
             eng_overlay: [Label::new(), Label::new(), Label::new(), Label::new()],
             tree_sidebar: None,
-        })
+        }
     }
 
+    /// Generates the version-string heading text, setting `label` appropriately.
     fn set_motd(label: &mut Label<'r>, version_string: &str) {
         label.set(&format!("Blockfish {}", version_string));
     }
 
+    /// Generates help text labels to display help for control scheme `controls`, setting
+    /// the `Label`'s in `help` appropriately.
     fn set_help_labels_controls(help: &mut [Vec<Label<'r>>], controls: &Controls) {
         use crate::controls::{EngineOp::*, GameOp::*};
 
@@ -330,7 +338,7 @@ impl<'r> View<'r> {
         self.eng_status.set(&text);
     }
 
-    /// Sets the engine to indicate it is not enabled.
+    /// Sets the view to indicate that the engine is not enabled.
     pub fn set_engine_disabled(&mut self) {
         self.eng_matrix.clear();
         self.eng_ghost.clear();
@@ -338,12 +346,16 @@ impl<'r> View<'r> {
         self.eng_status.set("engine not enabled");
     }
 
-    pub fn disable_tree(&mut self) {
-        self.tree_sidebar = None;
+    /// Enables the tree sidebar in the view. Note that this function isn't always
+    /// necessary to call, since other tree functions (e.g. `set_tree_nodes`) will
+    /// automatically enable the sidebar.
+    pub fn set_tree_enabled(&mut self) {
+        let _ = self.enable_tree_();
     }
 
-    pub fn enable_tree(&mut self) {
-        let _ = self.enable_tree_();
+    /// Disables the tree sidebar.
+    pub fn set_tree_disabled(&mut self) {
+        self.tree_sidebar = None;
     }
 
     fn enable_tree_(&mut self) -> &mut TreeSidebar<'r> {
@@ -354,32 +366,36 @@ impl<'r> View<'r> {
         })
     }
 
+    /// Sets the list of nodes to display in the tree sidebar.
     pub fn set_tree_nodes(&mut self, iter: impl IntoIterator<Item = TreeNode>) {
         self.enable_tree_().set_nodes(iter);
     }
 
+    /// Sets which node is being hovered over in the tree sidebar, by its index in the
+    /// list (in the same order as supplied to `set_tree_nodes`). If `None`, then no node
+    /// is hovered over.
     pub fn set_tree_hover(&mut self, idx: Option<usize>) {
-        self.enable_tree_()
-            .set_hover(idx.unwrap_or(std::usize::MAX));
+        self.enable_tree_().hover = idx;
     }
 
+    /// Sets the scroll offset of the tree sidebar. Larger values indicate scrolling down.
     pub fn set_tree_scroll(&mut self, scroll: i32) {
-        if self.tree_sidebar.is_some() {
-            self.geom.tree_scroll = scroll;
-        }
+        self.enable_tree_();
+        self.geom.tree_scroll = scroll;
     }
 
-    pub fn tree_scroll_bounds(&self) -> std::ops::Range<i32> {
+    /// Returns the valid range of values that should be passed to `set_tree_scroll`.
+    pub fn tree_scroll_bounds(&self) -> std::ops::RangeInclusive<i32> {
         match self.tree_sidebar.as_ref() {
-            Some(tree) => 0..tree.max_scroll(&self.geom),
-            None => 0..0,
+            Some(tree) => 0..=tree.max_scroll(&self.geom),
+            None => 0..=0,
         }
     }
 
     /// Renders any labels whos text has recently been updated, and needs to be
     /// rendered. This function should be called whenever components of the view were
     /// possibly updated.
-    pub fn render_labels(&mut self, tc: &'r TextureCreator) {
+    pub fn render_labels(&self, tc: &'r TextureCreator) {
         let colors = &self.colors;
         let hud_font = &self.resources.hud_font;
         let hud_font_bold = &self.resources.hud_font_bold;
@@ -387,18 +403,18 @@ impl<'r> View<'r> {
         let hud_font_small_bold = &self.resources.hud_font_small_bold;
 
         self.motd.render(tc, hud_font_bold, colors.text.0);
-        for lbl in self.stats.iter_mut() {
+        for lbl in self.stats.iter() {
             lbl.render(tc, hud_font, colors.text.0);
         }
-        for lns in self.help.iter_mut() {
+        for lns in self.help.iter() {
             let mut font = hud_font_bold; // header line is bold
-            for ln in lns.iter_mut() {
+            for ln in lns.iter() {
                 ln.render(tc, font, colors.text.0);
                 font = hud_font; // other lines are not bold
             }
         }
 
-        for lbl in self.eng_overlay.iter_mut() {
+        for lbl in self.eng_overlay.iter() {
             lbl.render(tc, hud_font_small_bold, colors.text.0);
         }
         self.eng_status.render(tc, hud_font_small, colors.text.1);
@@ -411,7 +427,7 @@ impl<'r> View<'r> {
         };
         self.progress.0.render(tc, progress_font, progress_color);
 
-        if let Some(tree) = self.tree_sidebar.as_mut() {
+        if let Some(tree) = self.tree_sidebar.as_ref() {
             tree.render_labels(colors, &self.resources, tc);
         }
     }
@@ -481,6 +497,11 @@ impl<'r> View<'r> {
         if let Some(tree) = self.tree_sidebar.as_ref() {
             tree.paint(cv, &self.geom, &self.colors);
         }
+    }
+
+    /// Creates a timer based on the handling settings configured for this view.
+    pub fn make_timer(&self) -> Timer {
+        Timer::new(&self.controls.handling)
     }
 
     /// Handle SDL event `evt`. If an action should be performed as a result, returns
@@ -568,7 +589,7 @@ impl<'r> View<'r> {
     fn handle_mouse_motion(&self, pos: (i32, i32)) -> Option<Action> {
         let tree = self.tree_sidebar.as_ref()?;
         let idx = tree.entry_idx(&self.geom, pos);
-        if tree.hover() == idx {
+        if tree.hover == idx {
             return None;
         }
         let op = match idx {
@@ -660,9 +681,8 @@ impl Cells {
 /// operations.
 struct Label<'a> {
     text: String,
-    texture: Option<Texture<'a>>,
-    width: u32,
-    height: u32,
+    texture: std::cell::Cell<Option<Texture<'a>>>,
+    dim: std::cell::Cell<(u32, u32)>,
 }
 
 impl<'a> Label<'a> {
@@ -670,18 +690,24 @@ impl<'a> Label<'a> {
     fn new() -> Self {
         Self {
             text: String::new(),
-            texture: None,
-            width: 0,
-            height: 0,
+            texture: None.into(),
+            dim: (0, 0).into(),
         }
+    }
+
+    fn width(&self) -> u32 {
+        self.dim.get().0
+    }
+
+    fn height(&self) -> u32 {
+        self.dim.get().1
     }
 
     /// Clears the text on this label (equivalent to `self.set("");`).
     fn clear(&mut self) {
         self.text.clear();
-        self.texture = None;
-        self.width = 0;
-        self.height = 0;
+        self.texture.set(None);
+        self.dim.set((0, 0));
     }
 
     /// Sets the label text to the provided string.
@@ -696,12 +722,16 @@ impl<'a> Label<'a> {
     /// `paint`. Returns `true` if the text had to be re-rendered from the given font,
     /// `false` if not since the text had not changed since the last call to `render()`.
     fn render(
-        &mut self,
+        &self,
         tc: &'a TextureCreator,
         font: &sdl2::ttf::Font<'a, 'static>,
         color: Color,
     ) -> bool {
-        if self.texture.is_some() || self.text.is_empty() {
+        if self.text.is_empty() {
+            return false;
+        }
+        if let Some(tx) = self.texture.take() {
+            self.texture.set(Some(tx));
             return false;
         }
         let surf = font
@@ -712,17 +742,18 @@ impl<'a> Label<'a> {
             .create_texture_from_surface(&surf)
             .expect("texture creation failed");
         let query = texture.query();
-        self.width = query.width;
-        self.height = query.height;
-        self.texture = Some(texture);
+        self.texture.set(Some(texture));
+        self.dim.set((query.width, query.height));
         true
     }
 
     /// Paints this label onto canvas `cv` with top-left origin `(x, y)`.
     fn paint(&self, cv: &mut Canvas, (x, y): (i32, i32)) {
-        if let Some(texture) = self.texture.as_ref() {
-            let rect = (x, y, self.width, self.height).into();
-            cv.copy(texture, None, Some(rect)).unwrap();
+        if let Some(texture) = self.texture.take() {
+            let (w, h) = self.dim.get();
+            let rect = (x, y, w, h).into();
+            cv.copy(&texture, None, Some(rect)).unwrap();
+            self.texture.set(Some(texture));
         }
     }
 }
@@ -730,7 +761,7 @@ impl<'a> Label<'a> {
 struct TreeSidebar<'r> {
     nodes: Vec<TreeNode>,
     labels: Vec<TreeNodeLabels<'r>>,
-    hover: usize,
+    hover: Option<usize>,
 }
 
 struct TreeNodeLabels<'r> {
@@ -745,10 +776,11 @@ impl<'r> TreeSidebar<'r> {
         Self {
             nodes: vec![],
             labels: vec![],
-            hover: std::usize::MAX,
+            hover: None,
         }
     }
 
+    /// Returns the index of the entry in the tree at position `pos`, if any.
     fn entry_idx(&self, geom: &Geometry, pos: (i32, i32)) -> Option<usize> {
         if let Some(idx) = geom.tree_node_entry_at(pos) {
             if idx < self.nodes.len() {
@@ -758,11 +790,14 @@ impl<'r> TreeSidebar<'r> {
         None
     }
 
+    /// Returns the max valid scroll offset. May be `0`, if the tree is too short to be
+    /// scrolled.
     fn max_scroll(&self, geom: &Geometry) -> i32 {
         let height = (self.nodes.len() as i32) * geom.tree_node_height;
         std::cmp::max(0, height - geom.bottom)
     }
 
+    /// Sets the nodes in the tree to the given list of `TreeNode`'s
     fn set_nodes(&mut self, iter: impl IntoIterator<Item = TreeNode>) {
         self.nodes.clear();
         self.nodes.extend(iter);
@@ -772,27 +807,14 @@ impl<'r> TreeSidebar<'r> {
         for (lbl, node) in labels.iter_mut().zip(self.nodes.iter()) {
             lbl.set(node);
         }
-    }
 
-    fn set_hover(&mut self, idx: usize) {
-        self.hover = idx;
-    }
-
-    fn hover(&self) -> Option<usize> {
-        if self.hover < self.nodes.len() {
-            Some(self.hover)
-        } else {
-            None
+        if self.hover.map_or(false, |idx| idx >= self.nodes.len()) {
+            self.hover = None;
         }
     }
 
-    fn render_labels(
-        &mut self,
-        colors: &Colors,
-        resources: &Resources<'r>,
-        tc: &'r TextureCreator,
-    ) {
-        for lbl in self.labels.iter_mut() {
+    fn render_labels(&self, colors: &Colors, resources: &Resources<'r>, tc: &'r TextureCreator) {
+        for lbl in self.labels.iter() {
             lbl.render(colors, resources, tc);
         }
     }
@@ -802,13 +824,13 @@ impl<'r> TreeSidebar<'r> {
         cv.fill_rect(geom.tree_sidebar).unwrap();
 
         // draw background for hovered item
-        if let Some(idx) = self.hover() {
+        if let Some(idx) = self.hover {
             cv.set_draw_color(colors.grid_background.1);
             cv.fill_rect(geom.tree_node_entry(idx)).unwrap();
         }
 
         // draw tree branches
-        cv.set_draw_color(colors.background);
+        cv.set_draw_color(colors.text.1);
         // `vertical[d]` contains range `i0..i1` if vertical line from `(i0,d)` to
         // `(i1,d)` should be drawn
         let mut vertical: [Option<Range<usize>>; TREE_MAX_DEPTH] = Default::default();
@@ -878,7 +900,7 @@ impl<'r> TreeNodeLabels<'r> {
         self.count.set(&format!("{}", plural(node.count, "node")));
     }
 
-    fn render(&mut self, colors: &Colors, resources: &Resources<'r>, tc: &'r TextureCreator) {
+    fn render(&self, colors: &Colors, resources: &Resources<'r>, tc: &'r TextureCreator) {
         let font = &resources.hud_font_small_bold;
         self.rating.render(tc, font, colors.text.0);
         self.count.render(tc, font, colors.text.1);
@@ -1019,8 +1041,8 @@ impl Geometry {
         let mut x = self.matrix.right() + (self.cell as i32) * 3;
         let mut y = self.matrix.bottom() - self.cell as i32;
         let min_dx = (self.cell as i32) * 3 - self.text_pad;
-        x -= std::cmp::min(min_dx, (label.width as i32) / 2);
-        y -= label.height as i32;
+        x -= std::cmp::min(min_dx, (label.width() as i32) / 2);
+        y -= label.height() as i32;
         (x, y)
     }
 
@@ -1086,7 +1108,7 @@ impl Geometry {
         y += self.text_pad_small;
         x_rate += self.tree_node_height + self.text_pad_small;
         let mut x_count = self.tree_sidebar.right();
-        x_count -= count.width as i32 + self.text_pad_small;
+        x_count -= count.width() as i32 + self.text_pad_small;
         (x_rate, x_count, y)
     }
 }

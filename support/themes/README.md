@@ -5,7 +5,7 @@
 Blockfish reads `./config/theme.json` to to choose theme, so you can choose one of these
 themes by replacing `theme.json` with the desired theme `.json` file.
 
-If `theme.json` is missing, it will default to the `dark.json` theme.
+If `theme.json` is missing, it will default to the `jstris.json` theme.
 
 ## Creating a theme
 

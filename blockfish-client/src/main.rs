@@ -25,8 +25,8 @@ enum Error {
     Sdl(String),
     #[error("failed to load resources")]
     Resources(#[from] resources::ResourceLoadError),
-    #[error("failed to parse {0} config: {1}")]
-    ParseConfig(&'static str, serde_json::Error),
+    #[error("failed to parse {0} config")]
+    ParseConfig(&'static str, #[source] serde_json::Error),
 }
 
 fn sdl_error(e: impl std::fmt::Display) -> Error {
@@ -123,14 +123,36 @@ pub fn main() {
     std::process::exit(match entry(argh::from_env()) {
         Ok(_) => 0,
         Err(err) => {
-            let mut trace: Option<&(dyn std::error::Error + 'static)> = Some(&err);
-            while let Some(err) = trace {
-                log::error!("{}", err);
-                trace = err.source();
-            }
+            error_trace_log(&err);
+            #[cfg(feature = "msgbox")]
+            error_trace_msgbox(&err);
             1
         }
     });
+}
+
+fn error_trace_log(err: &(dyn std::error::Error + 'static)) {
+    let mut trace = Some(err);
+    while let Some(err) = trace {
+        log::error!("{}", err);
+        trace = err.source();
+    }
+}
+
+#[cfg(feature = "msgbox")]
+fn error_trace_msgbox(err: &(dyn std::error::Error + 'static)) {
+    use std::fmt::Write as _;
+    let mut contents = "Error: ".to_string();
+    let mut trace = Some(err);
+    while let Some(err) = trace {
+        let _ = write!(&mut contents, "{}\n", err);
+        trace = err.source();
+    }
+    let _ = msgbox::create(
+        "Blockfish crashed",
+        &contents,
+        msgbox::IconType::Error,
+    );
 }
 
 // Entry point
@@ -164,35 +186,16 @@ fn entry(mut args: Args) -> Result<()> {
         .config_dir
         .take()
         .unwrap_or_else(|| DEFAULT_CONFIG_DIR.into());
+    let controls = controls::Controls::from_config_file(&config_dir)?;
+    let theme = theme::Theme::from_config_file(&config_dir)?;
 
-    let controls = match std::fs::File::open(config_dir.join("controls.json")) {
-        Ok(f) => match serde_json::from_reader(f) {
-            Ok(cfg) => cfg,
-            Err(e) => return Err(Error::ParseConfig("controls", e)),
-        },
-        Err(_) => {
-            log::warn!("controls file not found; using defaults.");
-            controls::Controls::default()
-        }
-    };
-
-    let theme = match std::fs::File::open(config_dir.join("theme.json")) {
-        Ok(f) => match serde_json::from_reader(f) {
-            Ok(cfg) => cfg,
-            Err(e) => return Err(Error::ParseConfig("theme", e)),
-        },
-        Err(_) => {
-            log::warn!("theme file not found; using default.");
-            theme::Theme::default()
-        }
-    };
-
-    // build game state, view and controller
+    // build ai, game state, view and controller
     let rules = std::rc::Rc::new(Ruleset::guideline());
+    let ai = blockfish::AI::new(args.ai_config());
     let stacker = block_stacker::Stacker::new(rules.clone(), args.game_config());
-    let mut tmr = timer::Timer::new(controls.handling());
     let view = view::View::new(resources, rules, controls, &theme, VERSION);
-    let mut ctl = controller::Controller::new(stacker, view, args.ai_config());
+    let mut ctl = controller::Controller::new(ai, view, stacker);
+    let mut tmr = ctl.view().make_timer();
 
     loop {
         // poll user input events
@@ -214,8 +217,35 @@ fn entry(mut args: Args) -> Result<()> {
         ctl.poll_engine();
 
         // render and present
-        ctl.view_mut().render_labels(&texture_creator);
+        ctl.view().render_labels(&texture_creator);
         ctl.view().paint(&mut canvas);
         canvas.present();
+    }
+}
+
+trait FromConfigFile: (for<'de> serde::Deserialize<'de>) + Default {
+    fn config_name() -> &'static str;
+
+    fn from_config_file(dir: &std::path::Path) -> Result<Self> {
+        let name = Self::config_name();
+        let filename = format!("{}.json", name);
+        if let Ok(f) = std::fs::File::open(dir.join(filename)) {
+            serde_json::from_reader(f).map_err(|e| Error::ParseConfig(name, e))
+        } else {
+            log::warn!("{} config not found; using default", name);
+            Ok(Self::default())
+        }
+    }
+}
+
+impl FromConfigFile for controls::Controls {
+    fn config_name() -> &'static str {
+        "controls"
+    }
+}
+
+impl FromConfigFile for theme::Theme {
+    fn config_name() -> &'static str {
+        "theme"
     }
 }
