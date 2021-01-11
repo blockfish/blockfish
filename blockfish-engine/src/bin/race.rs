@@ -1,6 +1,6 @@
 use argh::FromArgs;
 use block_stacker::{Config as BSConfig, Ruleset, Stacker};
-use blockfish::{Config as BFConfig, StackerExt as _};
+use blockfish::{ai::AI, Config as BFConfig, StackerExt as _};
 use serde::Serialize;
 use std::io::Write;
 use std::path::PathBuf;
@@ -55,7 +55,7 @@ impl Args {
 }
 
 struct Race {
-    ai: blockfish::AI,
+    ai: AI,
     stacker: Stacker,
     ds_goal: Option<usize>,
     start_time: Instant,
@@ -73,8 +73,7 @@ impl Race {
     fn new(ai_cfg: BFConfig, game_cfg: BSConfig, rules: Ruleset) -> Self {
         let ds_goal = game_cfg.garbage.total_lines;
         let stacker = Stacker::new(rules.into(), game_cfg);
-        let mut ai = blockfish::AI::new(ai_cfg);
-        ai.set_suggestion_filter(blockfish::SuggestionFilter::GlobalBest);
+        let ai = AI::new(ai_cfg);
         Self {
             ai,
             stacker,
@@ -109,10 +108,22 @@ impl Race {
         self.won() || self.lost()
     }
 
-    fn step(&mut self) {
+    fn next_inputs(&mut self) -> Vec<blockfish::Input> {
         let snapshot = self.stacker.snapshot().expect("no snapshot");
-        let suggestion = self.ai.analyze(snapshot).next().expect("no suggestions");
-        self.stacker.run(suggestion.inputs_prefix(0));
+        let mut analysis = self.ai.analyze(snapshot);
+        analysis.wait();
+        let move_id = analysis
+            .all_moves()
+            .min_by(|&m, &n| analysis.cmp(m, n))
+            .expect("no suggestions");
+        let mut inputs = analysis.suggestion(move_id, 1).inputs;
+        assert_eq!(inputs.pop(), Some(blockfish::Input::HD));
+        inputs
+    }
+
+    fn step(&mut self) {
+        let inputs = self.next_inputs();
+        self.stacker.run(inputs);
         let (_, garbage_cleared) = self.stacker.hard_drop();
         self.trace.push(self.ds() + garbage_cleared);
     }

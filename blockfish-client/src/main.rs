@@ -148,11 +148,7 @@ fn error_trace_msgbox(err: &(dyn std::error::Error + 'static)) {
         let _ = write!(&mut contents, "{}\n", err);
         trace = err.source();
     }
-    let _ = msgbox::create(
-        "Blockfish crashed",
-        &contents,
-        msgbox::IconType::Error,
-    );
+    let _ = msgbox::create("Blockfish crashed", &contents, msgbox::IconType::Error);
 }
 
 // Entry point
@@ -191,7 +187,7 @@ fn entry(mut args: Args) -> Result<()> {
 
     // build ai, game state, view and controller
     let rules = std::rc::Rc::new(Ruleset::guideline());
-    let ai = blockfish::AI::new(args.ai_config());
+    let ai = blockfish::ai::AI::new(args.ai_config());
     let stacker = block_stacker::Stacker::new(rules.clone(), args.game_config());
     let view = view::View::new(resources, rules, controls, &theme, VERSION);
     let mut ctl = controller::Controller::new(ai, view, stacker);

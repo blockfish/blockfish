@@ -1,4 +1,8 @@
-use crate::{BasicMatrix, Color, Input, Snapshot};
+use crate::{
+    ai::Snapshot,
+    common::{Color, Input},
+    matrix::BasicMatrix,
+};
 use std::convert::TryInto;
 
 pub trait StackerExt {

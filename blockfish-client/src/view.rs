@@ -295,8 +295,8 @@ impl<'r> View<'r> {
     /// Sets the information about the static evaluation of the current preview.
     pub fn set_engine_overlay_score(
         &mut self,
-        eval: &blockfish::Eval,
-        params: &blockfish::ScoreParams,
+        eval: &blockfish::ai::Eval,
+        params: &blockfish::Parameters,
     ) {
         self.eng_overlay[0].set(&format!("eval:  {:<5}= ", eval.score(params)));
         self.eng_overlay[1].set(&format!(

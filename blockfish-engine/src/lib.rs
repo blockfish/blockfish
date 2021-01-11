@@ -1,13 +1,14 @@
-mod ai;
 mod common;
+mod config;
 mod finesse;
 mod matrix;
+mod place;
 mod shape;
 
-pub use ai::{
-    static_eval, Analysis, Config, Eval, ScoreParams, Snapshot, Suggestion, SuggestionFilter, AI,
-};
+pub mod ai;
+
 pub use common::{Color, Input, Orientation};
+pub use config::{Config, Parameters};
 pub use matrix::BasicMatrix;
 
 #[cfg(feature = "block-stacker")]

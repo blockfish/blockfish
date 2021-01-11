@@ -11,8 +11,9 @@ use crate::{
 #[error("no valid input sequences found")]
 pub struct FinesseNotFoundError;
 
-/// Contains data structures useful for computing placement inputs, and may be reused for
-/// performing the algorithm multiple times in order to save on allocations.
+/// Data structure for computing (minimum-)inputs to accomplish a placement. This type has
+/// a mutable interface so that the internal data structures may be reused for performing
+/// the algorithm multiple times.
 ///
 /// Current implementation uses Djikstra's algorithm to ensure a shortest path is found.
 /// It's perhaps not as efficient as A* but it does the job simply.

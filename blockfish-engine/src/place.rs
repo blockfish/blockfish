@@ -1,5 +1,4 @@
 use crate::{
-    ai::State,
     shape::{NormalizedShapeTransform, ShapeRef, ShapeTable, Transform},
     BasicMatrix, Color, Input, Orientation,
 };
@@ -44,9 +43,11 @@ impl<'s> Place<'s> {
     }
 }
 
-/// Iterator over placements as they are discovered on a matrix. This struct has a mutable
-/// interface so that the data structures can be reused for further placements.
-pub struct Placements<'s> {
+/// Data structure for discovering all valid placments on a matrix. Implements `Iterator`
+/// so these placements may be found in an incremental manner. This type has a mutable
+/// interface so that the internal data structures may be reused for performing the
+/// algorithm multiple times.
+pub struct PlaceFinder<'s> {
     shtb: &'s ShapeTable,
     matrix: BasicMatrix,
     // next placements to scan
@@ -57,13 +58,13 @@ pub struct Placements<'s> {
     normals_seen: HashSet<NormalizedShapeTransform>,
 }
 
-impl<'s> Placements<'s> {
+impl<'s> PlaceFinder<'s> {
     /// Returns a new placements iterator using the given shape table.
     ///
-    /// Initially this will produce no placements; needs to be fed an initial state with
-    /// `set_state`. Use `placements` function to automatically do this process.
+    /// Initially this will produce no placements; it needs to be configured with an
+    /// initial state via `reset_matrix` and `push_color` first.
     pub fn new(shtb: &'s ShapeTable) -> Self {
-        Placements {
+        PlaceFinder {
             shtb,
             matrix: BasicMatrix::with_cols(0),
             queue: Vec::with_capacity(64),
@@ -72,30 +73,33 @@ impl<'s> Placements<'s> {
         }
     }
 
-    /// Reset this iterator to search for placements from the given node state, `st`.
-    pub fn set_state(&mut self, st: &State) {
-        self.matrix.clone_from(st.matrix());
+    /// Resets this iterator, configuring it to search for placements on the matrix `mat`.
+    pub fn reset_matrix(&mut self, mat: &BasicMatrix) {
+        self.matrix.clone_from(mat);
         self.places_seen.clear();
         self.normals_seen.clear();
         self.queue.clear();
-        for (color, did_hold) in available_colors(st) {
-            match self.shtb.shape(color) {
-                Some(shape) => self.push_basic_placements(shape, did_hold),
-                None => log::error!("color {:?} has no shape!", color),
-            }
-        }
     }
 
-    fn push_basic_placements(&mut self, shape: ShapeRef<'s>, did_hold: bool) {
+    /// Configures this iterator to produce placements for the shape described by
+    /// `color`. PlaceFinder for this shape will require hold if `hold` is `true`.
+    pub fn push_shape(&mut self, color: Color, hold: bool) {
+        let shape = match self.shtb.shape(color) {
+            Some(shape) => shape,
+            None => {
+                log::error!("color {:?} has no shape!", color);
+                return;
+            }
+        };
         for r in Orientation::iter_all() {
             for j in shape.valid_cols(r, self.matrix.cols()) {
                 let i = shape.peak(&self.matrix, j, r);
-                self.queue.push(Place::new(shape, (i, j, r), did_hold));
+                self.queue.push(Place::new(shape, (i, j, r), hold));
             }
         }
     }
 
-    fn push_successors(&mut self, pl: &Place<'s>) {
+    fn expand(&mut self, pl: &Place<'s>) {
         let matrix = &self.matrix;
         self.queue.extend(
             [Input::Left, Input::Right, Input::CW, Input::CCW]
@@ -120,7 +124,7 @@ impl<'s> Placements<'s> {
     }
 }
 
-impl<'s> Iterator for Placements<'s> {
+impl<'s> Iterator for PlaceFinder<'s> {
     type Item = Place<'s>;
     fn next(&mut self) -> Option<Place<'s>> {
         loop {
@@ -128,7 +132,7 @@ impl<'s> Iterator for Placements<'s> {
             if self.is_cycle(&node) {
                 continue;
             }
-            self.push_successors(&node);
+            self.expand(&node);
             if !self.is_repeat(&node) {
                 return Some(node);
             }
@@ -136,49 +140,22 @@ impl<'s> Iterator for Placements<'s> {
     }
 }
 
-/// Returns a `Placements` iterator already "primed" with node state `st`.
-pub fn placements<'s>(shtb: &'s ShapeTable, st: &State) -> Placements<'s> {
-    let mut places = Placements::new(shtb);
-    places.set_state(st);
-    places
-}
-
-/// Returns `(color, hold)` for the next shape colors available for `state`, where `hold`
-/// is `true` if the it requires hold key to use.
-fn available_colors(state: &State) -> impl Iterator<Item = (Color, bool)> {
-    let (col_nh, mut col_h) = state.next();
-    if col_nh == col_h {
-        // don't use hold if identical to current piece
-        col_h = None;
-    }
-    let nh = col_nh.into_iter().map(|c| (c, false));
-    let h = col_h.into_iter().map(|c| (c, true));
-    nh.chain(h)
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{basic_matrix, shape::srs, Color, Input::*, Orientation::*, Snapshot};
+    use crate::{ai::Snapshot, basic_matrix, shape::srs, Color, Input::*, Orientation::*};
 
-    #[test]
-    fn test_available_colors() {
-        fn colors(hold: char, queue: &str) -> Vec<(char, bool)> {
-            let snapshot = Snapshot {
-                hold: std::convert::TryFrom::try_from(hold).ok(),
-                queue: queue.chars().map(Color::n).collect(),
-                matrix: BasicMatrix::with_cols(1),
-            };
-            available_colors(&snapshot.into())
-                .map(|(c, h)| (c.as_char(), h))
-                .collect()
+    /// Returns a `PlaceFinder` iterator already "primed" with node state `st`.
+    fn placements<'s>(shtb: &'s ShapeTable, ss: Snapshot) -> PlaceFinder<'s> {
+        let mut pfind = PlaceFinder::new(shtb);
+        pfind.reset_matrix(&ss.matrix);
+        if let Some(&c) = ss.queue.get(0) {
+            pfind.push_shape(c, false);
         }
-        assert_eq!(colors('.', "TJZ"), [('T', false), ('J', true)]);
-        assert_eq!(colors('I', "TJZ"), [('T', false), ('I', true)]);
-        assert_eq!(colors('I', "IJZ"), [('I', false)]);
-        assert_eq!(colors('.', "T"), [('T', false)]);
-        assert_eq!(colors('O', ""), [('O', true)]);
-        assert_eq!(colors('.', ""), []);
+        if let Some(c) = ss.hold {
+            pfind.push_shape(c, true);
+        }
+        pfind
     }
 
     #[test]
@@ -191,7 +168,7 @@ mod test {
         let mut o_count = 0;
         let mut s02_count = 0;
         let mut s13_count = 0;
-        for pl in placements(&srs(), &snapshot.into()) {
+        for pl in placements(&srs(), snapshot) {
             let c = pl.shape.color();
             let r = pl.tf.2;
             match c.as_char() {
@@ -215,7 +192,7 @@ mod test {
             hold: Some(Color::n('L')),
         };
 
-        let mut places: Vec<_> = placements(&srs(), &snapshot.into())
+        let mut places: Vec<_> = placements(&srs(), snapshot)
             .map(|pl| {
                 let c = pl.shape.color();
                 let (i, j, r) = pl.tf;
@@ -280,7 +257,7 @@ mod test {
             queue: vec![Color::n(color_char)],
             matrix,
         };
-        let mut places: Vec<_> = placements(&srs(), &snapshot.into())
+        let mut places: Vec<_> = placements(&srs(), snapshot)
             .filter(|pl| pl.tf.2 == r)
             .map(|pl| (pl.tf.0, pl.tf.1))
             .collect();
@@ -294,7 +271,7 @@ mod test {
             queue: vec![Color::n('O')],
             matrix,
         };
-        let mut places: Vec<_> = placements(&srs(), &snapshot.into())
+        let mut places: Vec<_> = placements(&srs(), snapshot)
             .map(|pl| (pl.tf.0, pl.tf.1))
             .collect();
         places.sort();

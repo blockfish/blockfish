@@ -1,58 +1,6 @@
-use crate::BasicMatrix;
+use crate::{config::Parameters, matrix::BasicMatrix};
 use red_union_find::UF;
-use std::{convert::TryFrom, ops::Range};
-use thiserror::Error;
-
-// Parameters
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ScoreParams {
-    pub row_factor: i64,
-    pub piece_estimate_factor: i64,
-    pub i_dependency_factor: i64,
-    pub piece_penalty: i64,
-}
-
-impl ScoreParams {
-    pub fn to_vec(&self) -> Vec<i64> {
-        vec![
-            self.row_factor,
-            self.piece_estimate_factor,
-            self.i_dependency_factor,
-            self.piece_penalty,
-        ]
-    }
-}
-
-impl Default for ScoreParams {
-    fn default() -> Self {
-        Self {
-            row_factor: 5,
-            piece_estimate_factor: 10,
-            i_dependency_factor: 10,
-            piece_penalty: 10,
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-#[error("expected exactly 3 values")]
-pub struct ParseScoreParamsError;
-
-impl<'a> TryFrom<&'a [i64]> for ScoreParams {
-    type Error = ParseScoreParamsError;
-    fn try_from(vs: &'a [i64]) -> Result<Self, ParseScoreParamsError> {
-        match vs {
-            [v1, v2, v3, v4] => Ok(ScoreParams {
-                row_factor: *v1,
-                piece_estimate_factor: *v2,
-                i_dependency_factor: *v3,
-                piece_penalty: *v4,
-            }),
-            _ => Err(ParseScoreParamsError),
-        }
-    }
-}
+use std::ops::Range;
 
 // Evaluations
 
@@ -67,7 +15,7 @@ impl Eval {
     /// Computes the "score" based on this evaluation. Lower is better.
     ///
     /// Note: used by A* to compute "h" value (remaining cost heuristic).
-    pub fn score(&self, params: &ScoreParams) -> i64 {
+    pub fn score(&self, params: &Parameters) -> i64 {
         params.row_factor * (self.rows as i64)
             + params.piece_estimate_factor * (self.piece_estimate as i64)
             + params.i_dependency_factor * (self.i_dependencies as i64)
@@ -77,7 +25,7 @@ impl Eval {
 /// Computes the "penalty" for placing the given number of pieces.
 ///
 /// Note: used in A* to compute "g" value (path cost).
-pub fn penalty(params: &ScoreParams, depth: usize) -> i64 {
+pub fn penalty(params: &Parameters, depth: usize) -> i64 {
     (depth as i64) * params.piece_penalty
 }
 
@@ -268,18 +216,6 @@ fn covered_hole(mat: &BasicMatrix, buf: &mut ResidueBuf) -> Option<(u16, Range<u
 mod test {
     use super::*;
     use crate::basic_matrix;
-
-    #[test]
-    fn test_parse_params() {
-        let params = ScoreParams {
-            row_factor: 1,
-            piece_estimate_factor: 2,
-            i_dependency_factor: 3,
-            piece_penalty: 4,
-        };
-        let vec = params.to_vec();
-        assert_eq!(ScoreParams::try_from(vec.as_slice()).unwrap(), params);
-    }
 
     #[test]
     fn test_intersecting_ranges() {

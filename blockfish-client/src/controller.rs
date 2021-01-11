@@ -3,19 +3,19 @@ use crate::{
     view::View,
 };
 use block_stacker::Stacker;
-use blockfish::{StackerExt as _, AI};
+use blockfish::{ai, Parameters, StackerExt as _};
 
 use bitflags::bitflags;
 
 /// Controls a view according to changes in a `Stacker` state, incoming
 /// engine suggestions, and user actions.
 pub struct Controller<'v> {
-    ai: AI,
+    ai: ai::AI,
     view: View<'v>,
     stacker: Stacker,
     progress: Progress,
     undo_list: Vec<(Stacker, Progress)>,
-    engine: Option<Engine>,
+    analysis: Option<Analysis>,
     trie: Option<Trie>,
 }
 
@@ -27,7 +27,7 @@ bitflags! {
         const STATS   = 0b00001000; // just stats labels
         const STACKER = 0b00001111; // anything stacker related
 
-        const AI      = 0b00010000; // just ai info/preview
+        const AI      = 0b00010000; // just analysis suggestions
         const TRIE    = 0b00100000; // just tr(e/i)e sidebar
         const ENGINE  = 0b00110000; // anything engine related
     }
@@ -35,7 +35,7 @@ bitflags! {
 
 impl<'v> Controller<'v> {
     /// Constructs a new `Controller`.
-    pub fn new(ai: AI, view: View<'v>, stacker: Stacker) -> Self {
+    pub fn new(ai: ai::AI, view: View<'v>, stacker: Stacker) -> Self {
         let mut ctl = Self {
             ai,
             view,
@@ -43,7 +43,7 @@ impl<'v> Controller<'v> {
             trie: None,
             undo_list: Vec::with_capacity(100),
             progress: Progress::new(),
-            engine: None,
+            analysis: None,
         };
 
         ctl.consult_engine();
@@ -77,8 +77,8 @@ impl<'v> Controller<'v> {
             );
         }
         if upd.contains(Update::AI) {
-            if let Some(eng) = self.engine.as_ref() {
-                eng.update_view(&mut self.view)
+            if let Some(an) = self.analysis.as_mut() {
+                an.update_view(&mut self.view)
             } else {
                 self.view.set_engine_disabled();
             }
@@ -97,23 +97,17 @@ impl<'v> Controller<'v> {
     /// state.
     fn consult_engine(&mut self) {
         if let Some(trie) = self.trie.as_mut() {
-            // change suggestion filter so the trie sees more of the analysis than just
-            // the best moves.
-            self.ai
-                .set_suggestion_filter(blockfish::SuggestionFilter::All);
-            trie.reroot(self.stacker.clone(), &self.ai.config().scoring);
-        } else {
-            self.ai
-                .set_suggestion_filter(blockfish::SuggestionFilter::LocalBest);
+            // TODO: configure `self.ai` to push nodes to some channel that trie can see??
+            trie.reroot(self.stacker.clone(), &self.ai.config().parameters);
         }
 
         // start analysis
-        self.engine = Some(Engine::new(&mut self.ai, self.stacker.clone()));
+        self.analysis = Some(Analysis::new(&mut self.ai, self.stacker.clone()));
     }
 
     /// Disables the engine
     fn disable_engine(&mut self) {
-        self.engine = None;
+        self.analysis = None;
         if let Some(trie) = self.trie.as_mut() {
             trie.clear();
         }
@@ -121,8 +115,8 @@ impl<'v> Controller<'v> {
 
     /// Polls the engine process for any updates to its progress.
     pub fn poll_engine(&mut self) {
-        if let Some(eng) = self.engine.as_mut() {
-            if eng.poll(self.trie.as_mut()) {
+        if let Some(an) = self.analysis.as_mut() {
+            if an.poll(/*self.trie.as_mut()*/) {
                 self.update_view(Update::ENGINE);
             }
         }
@@ -208,7 +202,7 @@ impl<'v> Controller<'v> {
             }
         }
 
-        if self.engine.is_some() && upd.intersects(Update::MATRIX) {
+        if self.analysis.is_some() && upd.intersects(Update::MATRIX) {
             self.consult_engine();
             upd |= Update::ENGINE;
         }
@@ -218,8 +212,8 @@ impl<'v> Controller<'v> {
 
     /// Handles an engine related user action.
     fn handle_engine_op(&mut self, op: EngineOp) {
-        if let Some(eng) = self.engine.take() {
-            self.handle_engine_op_enabled(op, eng);
+        if let Some(an) = self.analysis.take() {
+            self.handle_engine_op_enabled(op, an);
         } else {
             match op {
                 EngineOp::Toggle => {
@@ -233,7 +227,7 @@ impl<'v> Controller<'v> {
 
     /// Handles an engine related user action, when engine is enabled. This function is
     /// responsible for setting `self.engine` before returning.
-    fn handle_engine_op_enabled(&mut self, op: EngineOp, mut eng: Engine) {
+    fn handle_engine_op_enabled(&mut self, op: EngineOp, mut an: Analysis) {
         let mut upd = Update::empty();
         match op {
             EngineOp::Toggle => {
@@ -242,30 +236,32 @@ impl<'v> Controller<'v> {
             }
             EngineOp::Next | EngineOp::Prev => {
                 let delta = if op == EngineOp::Prev { -1 } else { 1 };
-                eng.select(delta, 0);
-                upd |= Update::AI;
-                self.engine = Some(eng);
+                if an.nav(delta, 0) {
+                    upd |= Update::AI;
+                }
+                self.analysis = Some(an);
             }
             EngineOp::StepForward | EngineOp::StepBackward => {
                 let step = if op == EngineOp::StepBackward { -1 } else { 1 };
-                eng.select(0, step);
-                upd |= Update::AI;
-                self.engine = Some(eng);
+                if an.nav(0, step) {
+                    upd |= Update::AI;
+                }
+                self.analysis = Some(an);
             }
             EngineOp::Goto => {
-                if eng.go_to_selection(&mut self.stacker) {
+                if an.go_to(&mut self.stacker) {
                     upd |= Update::STACKER;
                 }
-                self.engine = Some(eng);
+                self.analysis = Some(an);
             }
             EngineOp::AutoPlay => {
-                if eng.go_to_selection(&mut self.stacker) {
+                if an.go_to(&mut self.stacker) {
+                    upd |= Update::STACKER | Update::ENGINE;
                     self.undo_save();
                     self.hard_drop();
-                    upd |= Update::STACKER | Update::ENGINE;
                     self.consult_engine();
                 } else {
-                    self.engine = Some(eng);
+                    self.analysis = Some(an);
                 }
             }
         }
@@ -355,210 +351,183 @@ impl Progress {
     }
 }
 
-/// Holds a handle to a Blockfish analysis, the top suggestions produced by that process,
-/// and the current suggestion being selected by the user.
-struct Engine {
-    start_time: std::time::Instant,
-    params: String,
-    source: Stacker,
-    ai: Option<blockfish::Analysis>,
-    suggestions: Vec<Suggestion>,
-    selection: Option<Selection>,
-    stats: Option<(f64, usize, usize)>,
-}
-
-struct Suggestion(blockfish::Suggestion);
-
-struct Selection {
-    idx: usize,
-    pos: usize,
+/// Holds the current state of a background analysis, the suggested moves, and which move
+/// is selected.
+struct Analysis {
+    analysis: Option<ai::Analysis>,
+    status: (String, Option<(f64, usize, usize)>),
+    src: Stacker,
     preview: Stacker,
+    moves: Vec<Move>,
+    sel_idx: usize,
+    sel_pos: usize,
 }
 
-impl Engine {
-    /// Constructs a new `Engine` using Blockfish instance `AI`. Uses initial stacker
-    /// state `source` to kick off the analysis.
-    fn new(ai: &mut AI, mut source: Stacker) -> Self {
-        let params = format!("{}", ai.config());
-        source.reset_piece();
+struct Move {
+    id: ai::MoveId,
+    rating: i64,
+    inputs: Vec<blockfish::Input>,
+}
+
+impl Analysis {
+    fn new(ai: &mut ai::AI, mut src: Stacker) -> Self {
+        src.reset_piece();
+        let mut preview = src.clone();
+        preview.freeze();
+        let cfg_string = format!("{}", ai.config());
         Self {
-            start_time: std::time::Instant::now(),
-            ai: source.snapshot().map(|ss| ai.analyze(ss)),
-            suggestions: vec![],
-            selection: None,
-            stats: None,
-            params,
-            source,
+            analysis: src.snapshot().map(|ss| ai.analyze(ss)),
+            status: (cfg_string, None),
+            moves: vec![],
+            sel_idx: 0,
+            sel_pos: 0,
+            src,
+            preview,
         }
     }
 
-    /// Updates `view` to show the current state of the engine process, and the selected
-    /// suggestion.
-    // TODO: partial updates for the engine matrix
-    fn update_view(&self, view: &mut View) {
-        view.set_engine_status(&self.params, self.stats);
-        if let Some(sel) = self.selection.as_ref() {
-            view.set_engine_matrix(sel.preview.matrix());
-            view.set_engine_piece(sel.preview.current_piece_ghost());
-            if self.finished() {
-                let sugg = &self.suggestions[sel.idx];
-                let seq = (sel.idx, self.suggestions.len());
-                let pos = (sel.pos, sugg.steps());
-                let rating = sugg.rating();
-                view.set_engine_overlay(seq, pos, rating);
-                let is_last_step = pos.0 == pos.1 - 1;
-                if is_last_step {
-                    view.set_engine_piece(None);
-                }
-            } else {
-                view.clear_engine_overlay();
-            }
-        } else {
-            view.set_engine_matrix(self.source.matrix().map(|(ij, _)| (ij, 'H')));
-            view.set_engine_piece(None);
-            view.clear_engine_overlay();
-        }
-    }
-
-    /// Adds `sugg` to the list of suggestions, or replaces an existing suggestion, then
-    /// re-sorts the suggestions.
-    fn insert(&mut self, new_sugg: blockfish::Suggestion) {
-        let mut insert = true;
-        for sugg in self.suggestions.iter_mut() {
-            if sugg.update_from(&new_sugg) {
-                insert = false;
-                break;
-            }
-        }
-        if insert {
-            self.suggestions.push(new_sugg.into());
-        }
-        self.suggestions.sort_by_key(Suggestion::rating);
-        self.select(0, 0);
-    }
-
-    fn finished(&self) -> bool {
-        self.ai.is_none()
-    }
-
-    /// Polls the Blockfish process, returning `true` if the suggestions were updated as a
-    /// result. Suggestions are inserted into `trie` as well.
-    fn poll(&mut self, mut trie: Option<&mut Trie>) -> bool {
-        let mut ai = match self.ai.take() {
-            Some(ai) => ai,
+    fn poll(&mut self) -> bool {
+        let mut an = match self.analysis.take() {
+            Some(an) => an,
             None => return false,
         };
-
-        const MAX_POLLS_PER_FRAME: usize = 100;
-        let mut polls = 0;
-        while !ai.would_block() && polls < MAX_POLLS_PER_FRAME {
-            match ai.next() {
-                Some(sugg) => {
-                    if let Some(trie) = trie.as_mut() {
-                        let inputs = &sugg.inputs[..sugg.inputs.len() - 1];
-                        trie.insert(inputs, sugg.score);
-                    }
-                    self.insert(sugg);
-                    polls += 1;
+        const MAX_POLLS: usize = 100;
+        let mut n_polls = 0;
+        while n_polls < MAX_POLLS {
+            n_polls += 1;
+            match an.poll() {
+                Ok(Some(m_id)) => self.update(m_id, &an),
+                Ok(None) => {
+                    self.analysis = Some(an);
+                    break;
                 }
-                None => {
-                    let time = std::time::Instant::now() - self.start_time;
-                    let time = time.as_secs_f64();
-                    if let Some((nodes, iters)) = ai.stats() {
-                        self.stats = Some((time, nodes, iters));
-                    }
-                    return true;
+                Err(ai::AnalysisDone) => {
+                    log::info!("engine finished");
+                    self.status.1 = an.stats().map(|stats| {
+                        let time = stats.time_taken.as_secs_f64();
+                        let nodes = stats.fringe_nodes + stats.iterations;
+                        let iters = stats.iterations;
+                        (time, nodes, iters)
+                    });
+                    break;
                 }
             }
         }
-
-        self.ai = Some(ai);
-        polls > 0
+        n_polls > 0
     }
 
-    /// Selects a different suggestion, moving by `delta` in the list of suggestions or
-    /// `step` in the sequence for the suggestion. I.e., to move to the next suggestion,
-    /// `delta` should be `1`, and to move to the previous selection `delta` should be
-    /// `-1`. To step forward or backwards, `step` should be `1` or `-1` respectively.
-    fn select(&mut self, delta: isize, step: isize) {
-        if self.suggestions.is_empty() {
-            return;
-        }
-
-        let source = &self.source;
-        let sel = self.selection.get_or_insert_with(|| Selection {
-            idx: 0,
-            pos: 0,
-            preview: source.clone(),
-        });
-
-        let seqs = self.suggestions.len();
-        sel.idx = (sel.idx + (seqs as isize + delta) as usize) % seqs;
-
-        let sugg = &self.suggestions[sel.idx];
-        let steps = sugg.steps();
-        sel.pos = if delta == 0 {
-            (sel.pos + (steps as isize + step) as usize) % steps
-        } else {
-            0
+    fn update(&mut self, m_id: ai::MoveId, analysis: &ai::Analysis) {
+        let mov = match self.moves.iter_mut().find(|m| m.id == m_id) {
+            Some(m) => m,
+            None => {
+                self.moves.push(Move::new(m_id));
+                self.moves.last_mut().unwrap()
+            }
         };
-
-        let preview = &mut sel.preview;
-        preview.clone_from(&self.source);
-        preview.freeze();
-        sugg.run(preview, sel.pos);
+        let sugg = analysis.suggestion(m_id, std::usize::MAX);
+        mov.rating = sugg.rating;
+        mov.inputs = sugg.inputs;
+        // unstable sort OK because `.cmp()` does not cause ties.
+        self.moves
+            .sort_unstable_by(|m1, m2| analysis.cmp(m1.id, m2.id));
+        self.nav(0, 0);
     }
 
-    /// Tries to modify `dst` to go to the first step of the current selected suggestion.
-    /// Returns `true` if `dst` was modified, or `false` and leaves `dst` untouched if
-    /// there is no valid suggestion.
-    fn go_to_selection(&self, dst: &mut Stacker) -> bool {
-        if !self.finished() {
+    fn nav(&mut self, idx_off: isize, step_off: isize) -> bool {
+        if self.moves.is_empty() {
             return false;
         }
-        let sugg = match self.selection.as_ref() {
-            Some(sel) => &self.suggestions[sel.idx],
-            None => return false,
-        };
-        dst.clone_from(&self.source);
-        sugg.run(dst, 0);
+        // offset index (wrapping)
+        let len = self.moves.len();
+        self.sel_idx = (self.sel_idx + (len as isize + idx_off) as usize) % len;
+        let mov = &self.moves[self.sel_idx];
+        if idx_off == 0 {
+            // offset position (wrapping)
+            let steps = mov.steps();
+            self.sel_pos = (self.sel_pos + (steps as isize + step_off) as usize) % steps;
+        } else {
+            // if index changed, then always go to first position
+            self.sel_pos = 0;
+        }
+        // update the stacker preview
+        self.preview.clone_from(&self.src);
+        self.preview.freeze();
+        self.preview.run(mov.inputs_prefix(self.sel_pos));
         true
     }
+
+    fn go_to(&self, dst: &mut Stacker) -> bool {
+        if self.analysis.is_some() || self.moves.is_empty() {
+            return false;
+        }
+        dst.clone_from(&self.src);
+        dst.run(self.moves[self.sel_idx].inputs_prefix(0));
+        true
+    }
+
+    fn update_view(&mut self, view: &mut View) {
+        // update status text
+        view.set_engine_status(&self.status.0, self.status.1);
+
+        // update overlay
+        let show_piece;
+        if let Some(sel) = &self.moves.get(self.sel_idx) {
+            let len = self.moves.len();
+            let steps = sel.steps();
+            view.set_engine_overlay((self.sel_idx, len), (self.sel_pos, steps), sel.rating);
+            show_piece = self.sel_pos < steps - 1;
+        } else {
+            view.clear_engine_overlay();
+            show_piece = false;
+        }
+
+        // update matrix/piece indicator
+        view.set_engine_matrix(self.preview.matrix());
+        view.set_engine_piece(if show_piece {
+            self.preview.current_piece_ghost()
+        } else {
+            None
+        });
+    }
 }
 
-impl Suggestion {
-    fn steps(&self) -> usize {
-        self.0.depth() + 1
-    }
-
-    fn rating(&self) -> i64 {
-        self.0.score
-    }
-
-    fn run(&self, stacker: &mut Stacker, pos: usize) {
-        stacker.run(self.0.inputs_prefix(pos));
-    }
-
-    fn update_from(&mut self, src: &blockfish::Suggestion) -> bool {
-        if src.inputs_prefix(0).eq(self.0.inputs_prefix(0)) {
-            if src.score < self.0.score {
-                self.0.clone_from(src);
-            }
-            true
-        } else {
-            false
+impl Move {
+    fn new(id: ai::MoveId) -> Self {
+        Self {
+            id,
+            inputs: vec![],
+            rating: std::i64::MAX,
         }
     }
-}
 
-impl From<blockfish::Suggestion> for Suggestion {
-    fn from(src: blockfish::Suggestion) -> Self {
-        Self(src)
+    fn steps(&self) -> usize {
+        self.inputs
+            .iter()
+            .filter(|&&i| i == blockfish::Input::HD)
+            .count()
+            + 1
+    }
+
+    fn inputs_prefix<'a>(&'a self, mut pos: usize) -> impl Iterator<Item = blockfish::Input> + 'a {
+        self.inputs
+            .iter()
+            .take_while(move |&&i| {
+                if i == blockfish::Input::HD {
+                    pos = match pos.checked_sub(1) {
+                        Some(pos) => pos,
+                        None => return false,
+                    };
+                }
+                true
+            })
+            .cloned()
     }
 }
 
+/// Holds a trie representation of all discovered nodes, with a linearized view for the
+/// tree sidebar. Implements UI actions such as hovering, scrolling, and collapsing nodes.
 struct Trie {
-    score_params: blockfish::ScoreParams,
+    parameters: Parameters,
     nodes: Vec<TrieNode>,
     linear: Vec<TrieNodeId>,
     hover: Option<usize>,
@@ -569,7 +538,7 @@ struct TrieNode {
     key: Vec<blockfish::Input>,
     stacker: Stacker,
     depth: usize,
-    eval: Option<blockfish::Eval>,
+    eval: Option<ai::Eval>,
     rating: Option<i64>,
     best_rating: i64,
     count: usize,
@@ -582,7 +551,7 @@ type TrieNodeId = usize;
 impl Trie {
     fn new() -> Self {
         Self {
-            score_params: blockfish::ScoreParams::default(),
+            parameters: Parameters::default(),
             nodes: vec![],
             linear: vec![],
             hover: None,
@@ -595,20 +564,21 @@ impl Trie {
         self.linear.clear();
     }
 
-    fn reroot(&mut self, mut stacker: Stacker, params: &blockfish::ScoreParams) {
+    fn reroot(&mut self, mut stacker: Stacker, params: &Parameters) {
         stacker.freeze();
         stacker.reset_piece();
         let root = TrieNode::new(vec![], stacker, std::usize::MAX);
         self.nodes.clear();
         self.nodes.push(root);
         self.linearize();
-        self.score_params.clone_from(params);
+        self.parameters.clone_from(params);
     }
 
     fn set_hover(&mut self, hover: Option<usize>) {
         self.hover = hover;
     }
 
+    #[allow(unused)]
     fn insert(&mut self, inputs: &[blockfish::Input], rating: i64) {
         if self.nodes.is_empty() {
             // cannot insert if no root
@@ -645,7 +615,7 @@ impl Trie {
         }
 
         // fixup final node
-        self[node_id].eval = stacker.snapshot().as_ref().map(blockfish::static_eval);
+        self[node_id].eval = stacker.snapshot().as_ref().map(ai::static_eval);
         self[node_id].rating = Some(rating);
         // re-build the linear tree repr
         // TODO: optimization: dont linearize if the update changed an unexpanded node
@@ -691,7 +661,7 @@ impl Trie {
             view.set_engine_matrix(preview.matrix());
             view.set_engine_piece(preview.current_piece_ghost());
             if let Some(eval) = self[hover_id].eval.as_ref() {
-                view.set_engine_overlay_score(eval, &self.score_params);
+                view.set_engine_overlay_score(eval, &self.parameters);
             } else {
                 view.clear_engine_overlay();
             }
