@@ -1,17 +1,17 @@
-mod a_star;
-mod analysis;
-mod eval;
-mod state;
-
 use crate::{
     config::Config,
     shape::{srs, ShapeTable},
     BasicMatrix, Color, Input,
 };
-use std::sync::Arc;
+
+mod analysis;
+mod b_star;
+mod eval;
+mod state;
 
 // Input / output types
 
+/// A game state snapshot to begin an analysis from.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Snapshot {
     pub hold: Option<Color>,
@@ -19,6 +19,7 @@ pub struct Snapshot {
     pub matrix: BasicMatrix,
 }
 
+/// A suggested sequence and its rating.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Suggestion {
     /// List of inputs to perform the suggested move.
@@ -27,13 +28,13 @@ pub struct Suggestion {
     pub rating: i64,
 }
 
-/// Statistics about the analysis once its finished.
+/// Statistics about the analysis after it has finished.
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub struct Stats {
-    /// Number of iterations of A*.
+    /// Number of iterations of the search algorithm.
     pub iterations: usize,
-    /// Number of nodes in the fringe set on completion.
-    pub fringe_nodes: usize,
+    /// Number of nodes generated.
+    pub nodes: usize,
     /// Total time taken to do the analysis.
     pub time_taken: std::time::Duration,
 }
@@ -60,7 +61,7 @@ pub use analysis::{Analysis, AnalysisDone, MoveId};
 /// as a reusable thread pool and/or the place to call `static_eval`.
 pub struct AI {
     config: Config,
-    shape_table: Arc<ShapeTable>,
+    shape_table: std::sync::Arc<ShapeTable>,
 }
 
 impl AI {
@@ -68,7 +69,7 @@ impl AI {
     pub fn new(config: Config) -> Self {
         Self {
             config,
-            shape_table: srs().into(),
+            shape_table: std::sync::Arc::new(srs()),
         }
     }
 

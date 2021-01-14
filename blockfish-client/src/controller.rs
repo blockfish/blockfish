@@ -7,6 +7,9 @@ use blockfish::{ai, Parameters, StackerExt as _};
 
 use bitflags::bitflags;
 
+// limit on number of times to poll per frame -- prevents lagging out the UI thread.
+const MAX_POLLS_PER_FRAME: u32 = 64;
+
 /// Controls a view according to changes in a `Stacker` state, incoming
 /// engine suggestions, and user actions.
 pub struct Controller<'v> {
@@ -100,12 +103,10 @@ impl<'v> Controller<'v> {
             // TODO: configure `self.ai` to push nodes to some channel that trie can see??
             trie.reroot(self.stacker.clone(), &self.ai.config().parameters);
         }
-
-        // start analysis
         self.analysis = Some(Analysis::new(&mut self.ai, self.stacker.clone()));
     }
 
-    /// Disables the engine
+    /// Disables the engine.
     fn disable_engine(&mut self) {
         self.analysis = None;
         if let Some(trie) = self.trie.as_mut() {
@@ -116,7 +117,7 @@ impl<'v> Controller<'v> {
     /// Polls the engine process for any updates to its progress.
     pub fn poll_engine(&mut self) {
         if let Some(an) = self.analysis.as_mut() {
-            if an.poll(/*self.trie.as_mut()*/) {
+            if an.poll() {
                 self.update_view(Update::ENGINE);
             }
         }
@@ -202,6 +203,7 @@ impl<'v> Controller<'v> {
             }
         }
 
+        // run a new analysis if the matrix contents were changed
         if self.analysis.is_some() && upd.intersects(Update::MATRIX) {
             self.consult_engine();
             upd |= Update::ENGINE;
@@ -226,7 +228,7 @@ impl<'v> Controller<'v> {
     }
 
     /// Handles an engine related user action, when engine is enabled. This function is
-    /// responsible for setting `self.engine` before returning.
+    /// responsible for setting `self.analysis` before returning.
     fn handle_engine_op_enabled(&mut self, op: EngineOp, mut an: Analysis) {
         let mut upd = Update::empty();
         match op {
@@ -256,10 +258,10 @@ impl<'v> Controller<'v> {
             }
             EngineOp::AutoPlay => {
                 if an.go_to(&mut self.stacker) {
-                    upd |= Update::STACKER | Update::ENGINE;
                     self.undo_save();
                     self.hard_drop();
                     self.consult_engine();
+                    upd |= Update::STACKER | Update::ENGINE;
                 } else {
                     self.analysis = Some(an);
                 }
@@ -286,33 +288,36 @@ impl<'v> Controller<'v> {
     /// Handles a tree related user action, when tree is enabled. This function is
     /// responsible for setting `self.trie` before returning.
     fn handle_tree_op_enabled(&mut self, op: TreeOp, mut trie: Trie) {
+        let mut upd = Update::empty();
         match op {
             TreeOp::Toggle => {
-                self.update_view(Update::TRIE);
+                upd |= Update::TRIE;
+                self.trie = None;
             }
             TreeOp::OverEntry(idx) => {
                 trie.set_hover(Some(idx));
+                upd |= Update::TRIE;
                 self.trie = Some(trie);
-                self.update_view(Update::TRIE);
             }
             TreeOp::Out => {
                 trie.set_hover(None);
+                // display the analysis preview again after hovering away from trie
+                upd |= Update::AI;
                 self.trie = Some(trie);
-                self.update_view(Update::ENGINE);
             }
             TreeOp::ClickEntry(idx) => {
-                let updated = trie.expand(idx);
-                self.trie = Some(trie);
-                if updated {
-                    self.update_view(Update::TRIE);
+                if trie.expand(idx) {
+                    upd |= Update::TRIE;
                 }
+                self.trie = Some(trie);
             }
             TreeOp::ScrollBy(dy) => {
                 trie.scroll_by(dy);
+                upd |= Update::TRIE;
                 self.trie = Some(trie);
-                self.update_view(Update::TRIE);
             }
         }
+        self.update_view(upd);
     }
 }
 
@@ -354,15 +359,23 @@ impl Progress {
 /// Holds the current state of a background analysis, the suggested moves, and which move
 /// is selected.
 struct Analysis {
+    // analysis, if any. if `None`, then the analysis is finished (or never ran).
     analysis: Option<ai::Analysis>,
+    // `(cfg_string, Some((time, nodes, iters)))`. the triple is just sent to the view.
     status: (String, Option<(f64, usize, usize)>),
+    // initial game state when the analysis began
     src: Stacker,
+    // current game state preview, for showing a step in a sequence
     preview: Stacker,
+    // all moves collected from the analysis, sorted best -> worst
     moves: Vec<Move>,
+    // currently selected move index
     sel_idx: usize,
+    // current position in move sequence
     sel_pos: usize,
 }
 
+/// A move suggested by the analysis.
 struct Move {
     id: ai::MoveId,
     rating: i64,
@@ -370,14 +383,17 @@ struct Move {
 }
 
 impl Analysis {
+    /// Starts an analysis using blockfish instance `ai`, taking a snapshot of game state
+    /// `src`.
     fn new(ai: &mut ai::AI, mut src: Stacker) -> Self {
+        // `reset_piece()` is required so simulating the input list works
         src.reset_piece();
+        // show just the snapshot in the initial preview (before any suggestion arrives)
         let mut preview = src.clone();
         preview.freeze();
-        let cfg_string = format!("{}", ai.config());
         Self {
             analysis: src.snapshot().map(|ss| ai.analyze(ss)),
-            status: (cfg_string, None),
+            status: (format!("{}", ai.config()), None),
             moves: vec![],
             sel_idx: 0,
             sel_pos: 0,
@@ -386,37 +402,38 @@ impl Analysis {
         }
     }
 
+    /// Polls the background analysis for updates. Returns `true` if anything changed as a
+    /// result of new analysis results.
     fn poll(&mut self) -> bool {
         let mut an = match self.analysis.take() {
             Some(an) => an,
             None => return false,
         };
-        const MAX_POLLS: usize = 100;
-        let mut n_polls = 0;
-        while n_polls < MAX_POLLS {
-            n_polls += 1;
+        let mut updated = false;
+        for _ in 0..MAX_POLLS_PER_FRAME {
             match an.poll() {
-                Ok(Some(m_id)) => self.update(m_id, &an),
-                Ok(None) => {
-                    self.analysis = Some(an);
-                    break;
-                }
+                Ok(Some(m_id)) => updated |= self.update(m_id, &an),
+                Ok(None) => break,
                 Err(ai::AnalysisDone) => {
-                    log::info!("engine finished");
+                    log::info!("analysis finished");
                     self.status.1 = an.stats().map(|stats| {
                         let time = stats.time_taken.as_secs_f64();
-                        let nodes = stats.fringe_nodes + stats.iterations;
+                        let nodes = stats.nodes;
                         let iters = stats.iterations;
                         (time, nodes, iters)
                     });
-                    break;
+                    // early return ends analysis
+                    return true;
                 }
             }
         }
-        n_polls > 0
+        self.analysis = Some(an);
+        updated
     }
 
-    fn update(&mut self, m_id: ai::MoveId, analysis: &ai::Analysis) {
+    /// Updates the stored moves by bringing move `m_id` up to date according to
+    /// `analysis`.
+    fn update(&mut self, m_id: ai::MoveId, analysis: &ai::Analysis) -> bool {
         let mov = match self.moves.iter_mut().find(|m| m.id == m_id) {
             Some(m) => m,
             None => {
@@ -427,12 +444,16 @@ impl Analysis {
         let sugg = analysis.suggestion(m_id, std::usize::MAX);
         mov.rating = sugg.rating;
         mov.inputs = sugg.inputs;
-        // unstable sort OK because `.cmp()` does not cause ties.
-        self.moves
-            .sort_unstable_by(|m1, m2| analysis.cmp(m1.id, m2.id));
-        self.nav(0, 0);
+        // unstable sort OK because `cmp` does not cause ties.
+        let cmp = |m1: &Move, m2: &Move| analysis.cmp(m1.id, m2.id);
+        self.moves.sort_unstable_by(cmp);
+        self.nav(0, 0)
     }
 
+    /// Performs some kind of nagivation through the visible moves. `idx_off` is the
+    /// amount to change the currently selected index (i.e. `1` for next, `-1` for
+    /// previous), and `step_off` is the amount to change the current position in the
+    /// sequence.
     fn nav(&mut self, idx_off: isize, step_off: isize) -> bool {
         if self.moves.is_empty() {
             return false;
@@ -456,6 +477,9 @@ impl Analysis {
         true
     }
 
+    /// Sets the given game state to the selected move. Returns `true` if the game state
+    /// was modified as a result, or `false` if it wasn't (e.g. analysis hasn't finished so
+    /// the move shouldn't be committed to).
     fn go_to(&self, dst: &mut Stacker) -> bool {
         if self.analysis.is_some() || self.moves.is_empty() {
             return false;
@@ -465,6 +489,7 @@ impl Analysis {
         true
     }
 
+    /// Updates the engine elements of `view`.
     fn update_view(&mut self, view: &mut View) {
         // update status text
         view.set_engine_status(&self.status.0, self.status.1);
@@ -500,6 +525,7 @@ impl Move {
         }
     }
 
+    /// Returns the number of "steps" (piece placements) in this move's input sequence.
     fn steps(&self) -> usize {
         self.inputs
             .iter()
@@ -508,6 +534,9 @@ impl Move {
             + 1
     }
 
+    /// Returns a prefix of the input sequence up to the first `pos` piece placements. The
+    /// last piece will be moved to but not placed; e.g. `.inputs_prefix(0)` moves the
+    /// piece to the first placement but does not lock in.
     fn inputs_prefix<'a>(&'a self, mut pos: usize) -> impl Iterator<Item = blockfish::Input> + 'a {
         self.inputs
             .iter()
@@ -524,6 +553,8 @@ impl Move {
     }
 }
 
+/// Currently defunct -- needs fixing!
+///
 /// Holds a trie representation of all discovered nodes, with a linearized view for the
 /// tree sidebar. Implements UI actions such as hovering, scrolling, and collapsing nodes.
 struct Trie {

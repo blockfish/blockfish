@@ -1,31 +1,30 @@
-use super::{a_star::Search, state::State, Stats, Suggestion};
+use super::{state::State, Stats, Suggestion};
 use crate::{finesse::FinesseFinder, place::PlaceFinder, shape::ShapeTable, Config, Input};
 use std::{
     collections::HashMap,
     sync::{mpsc, Arc, RwLock},
 };
 
+use super::b_star::{RatingChanged, Search};
+
 // Analysis handle
+
+// re-export MoveId
+pub use super::b_star::MoveId;
 
 /// A handle to a blockfish analysis running in the background.
 pub struct Analysis {
     moves: HashMap<MoveId, Move>,
     trace_inputs: Box<TraceInputsFn>,
     stats: Arc<RwLock<Option<Stats>>>,
-    rx: Rx,
+    rx: mpsc::Receiver<Msg>,
 }
 
-/// References a move discovered by the analysis. The input sequence and rating for the
-/// move may change as the analysis progresses.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct MoveId(usize);
-
-/// Condition indicating that the analysis has finished and no new updates to any moves
-/// will happen.
+/// Indicates that the analysis has finished and no new updates to any moves will happen.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnalysisDone;
 
-/// Holds information pertaining to a given move.
+/// Holds the latest information about a move.
 #[derive(Debug, Eq, PartialEq)]
 struct Move {
     iteration: usize,
@@ -35,16 +34,15 @@ struct Move {
 
 /// Message type sent from worker thread to `Analysis` handle.
 #[derive(Debug, Eq, PartialEq)]
-struct Msg(MoveId, Move);
+struct Msg {
+    move_id: MoveId,
+    mov: Move,
+}
 
-type Rx = mpsc::Receiver<Msg>;
-type Tx = mpsc::SyncSender<Msg>;
-
-/// Handle used by the worker thread to send information back to the handle.
-#[derive(Clone)]
+/// Used by the worker thread to send information to the `Analysis` handle.
 struct AnalysisSink {
     stats: Arc<RwLock<Option<Stats>>>,
-    tx: Tx,
+    tx: mpsc::SyncSender<Msg>,
 }
 
 impl Analysis {
@@ -71,9 +69,9 @@ impl Analysis {
     }
 
     /// Processes a message recieved from the worker thread.
-    fn recv(&mut self, msg: Msg) -> MoveId {
-        self.moves.insert(msg.0, msg.1);
-        msg.0
+    fn recv(&mut self, Msg { move_id, mov }: Msg) -> MoveId {
+        self.moves.insert(move_id, mov);
+        move_id
     }
 
     /// Returns all known moves in arbitrary order. To get the best move, use `.min_by()`
@@ -88,9 +86,7 @@ impl Analysis {
         let lhs = self.moves.get(&lhs).expect("invalid id");
         let rhs = self.moves.get(&rhs).expect("invalid id");
         // settle ties by using the one that was discovered in an earlier iteration.
-        lhs.rating
-            .cmp(&rhs.rating)
-            .then(lhs.iteration.cmp(&rhs.iteration))
+        (lhs.rating, lhs.iteration).cmp(&(rhs.rating, rhs.iteration))
     }
 
     /// Polls the analysis for any progress. Returns `Ok(Some(m))` if move `m`'s rating
@@ -138,6 +134,7 @@ impl AnalysisSink {
         self.tx.send(msg).is_ok()
     }
 
+    /// Finishes the analysis after first setting the collected stats to `stats`.
     fn finish(self, stats: Stats) {
         if let Ok(mut s) = self.stats.write() {
             *s = Some(stats);
@@ -149,73 +146,49 @@ impl AnalysisSink {
 
 fn analysis(shtb: Arc<ShapeTable>, cfg: Config, root: State, sink: AnalysisSink) {
     let start_time = std::time::Instant::now();
-
-    let mut min_scores = HashMap::with_capacity(128);
+    let mut iteration = 0;
     let mut global_min = std::i64::MAX;
-    let mut depth_count = Vec::with_capacity(16);
-    let mut iters = 0;
-    let mut search = Search::new(&shtb, cfg.parameters, cfg.search_limit, root);
 
-    while let Some(node) = search.next() {
-        iters += 1;
+    let mut search = Search::new(&shtb, cfg.parameters);
+    search.start(root);
 
-        if log::log_enabled!(log::Level::Debug) {
-            let depth = node.trace().count();
-            if depth_count.len() <= depth {
-                depth_count.resize(depth + 1, 0usize);
-            }
-            depth_count[depth] += 1;
-        }
+    while search.node_count() < cfg.search_limit {
+        match search.step() {
+            Ok(Some(RatingChanged {
+                move_id,
+                rating,
+                trace,
+            })) => {
+                log::debug!(
+                    "{:<2?} --> {:>3?}{} iter {}",
+                    move_id,
+                    rating,
+                    if rating < global_min { "*" } else { " " },
+                    iteration
+                );
+                global_min = std::cmp::min(rating, global_min);
 
-        let m_id = match node.trace().nth(0) {
-            // move ID is determined by the first placement in the trace
-            Some(idx) => MoveId(idx),
-            None => continue,
-        };
-
-        // update the min entry
-        let score = node.score();
-        let min_score = min_scores.entry(m_id).or_insert(std::i64::MAX);
-        if score < *min_score {
-            log::debug!(
-                "#{:<2} --> {:>3?}{} iter {}",
-                m_id.0,
-                score,
-                if score < global_min { "*" } else { " " },
-                iters
-            );
-
-            *min_score = score;
-            if score < global_min {
-                global_min = score;
+                if !sink.send(Msg {
+                    move_id,
+                    mov: Move {
+                        iteration,
+                        rating,
+                        trace,
+                    },
+                }) {
+                    log::warn!("handle disconnected mid-analysis");
+                    return;
+                }
             }
 
-            // send msg back to analysis handle on every update
-            let mov = Move {
-                iteration: iters,
-                rating: score,
-                trace: node.trace().collect(),
-            };
-            if !sink.send(Msg(m_id, mov)) {
-                log::error!("analysis disconnected");
-                return;
-            }
+            Ok(None) => iteration += 1,
+            Err(_) => break,
         }
-
-        // stop when memory limit hit
-        if search.node_count() >= cfg.search_limit {
-            break;
-        }
-    }
-
-    log::debug!("ran {} iterations of A*", iters);
-    for (depth, &count) in depth_count.iter().enumerate() {
-        log::debug!("  nodes at depth {}: {}", depth, count);
     }
 
     sink.finish(Stats {
-        iterations: iters,
-        fringe_nodes: search.node_count(),
+        iterations: iteration,
+        nodes: search.node_count(),
         time_taken: std::time::Instant::now() - start_time,
     });
 }
@@ -232,7 +205,7 @@ fn reconstruct_inputs(shtb: &ShapeTable, state0: State, trace: &[usize]) -> Vec<
     for &idx in trace {
         let pl = state
             .placements(&mut pfind)
-            .nth(idx)
+            .find(|pl| pl.idx == idx)
             .expect("trace idx out of range");
         if pl.did_hold {
             inputs.push(Input::Hold);
@@ -279,33 +252,42 @@ mod test {
             rating: 1234,
             trace: vec![6, 7, 8],
         };
-        assert!(sink.send(Msg(MoveId(6), mov)));
-        assert_eq!(handle.poll(), Ok(Some(MoveId(6))));
-        assert_eq!(handle.suggestion(MoveId(6), 0).rating, 1234);
+        assert!(sink.send(Msg {
+            move_id: MoveId::n(6),
+            mov
+        }));
+        assert_eq!(handle.poll(), Ok(Some(MoveId::n(6))));
+        assert_eq!(handle.suggestion(MoveId::n(6), 0).rating, 1234);
         assert_eq!(handle.poll(), Ok(None));
         sink.finish(Stats::default());
         assert_eq!(handle.poll(), Err(AnalysisDone));
     }
 
     fn example_analysis(sink: AnalysisSink) {
-        let mov1 = Move {
-            iteration: 1,
-            rating: 1234,
-            trace: vec![6, 7, 8],
-        };
-        let mov2 = Move {
-            iteration: 2,
-            rating: 1233,
-            trace: vec![7, 8, 9, 10],
-        };
-        let mov3 = Move {
-            iteration: 3,
-            rating: 1233,
-            trace: vec![6, 7, 9],
-        };
-        assert!(sink.send(Msg(MoveId(6), mov1)));
-        assert!(sink.send(Msg(MoveId(7), mov2)));
-        assert!(sink.send(Msg(MoveId(6), mov3)));
+        assert!(sink.send(Msg {
+            move_id: MoveId::n(6),
+            mov: Move {
+                iteration: 1,
+                rating: 1234,
+                trace: vec![6, 7, 8],
+            }
+        }));
+        assert!(sink.send(Msg {
+            move_id: MoveId::n(7),
+            mov: Move {
+                iteration: 2,
+                rating: 1233,
+                trace: vec![7, 8, 9, 10],
+            }
+        }));
+        assert!(sink.send(Msg {
+            move_id: MoveId::n(6),
+            mov: Move {
+                iteration: 3,
+                rating: 1233,
+                trace: vec![6, 7, 9],
+            }
+        }));
     }
 
     #[test]
@@ -323,21 +305,27 @@ mod test {
         example_analysis(sink);
         handle.wait();
         assert_eq!(
-            handle.suggestion(MoveId(6), std::usize::MAX),
+            handle.suggestion(MoveId::n(6), std::usize::MAX),
             Suggestion {
                 rating: 1233,
                 inputs: vec![Input::HD; 3],
             }
         );
         assert_eq!(
-            handle.suggestion(MoveId(7), std::usize::MAX),
+            handle.suggestion(MoveId::n(7), std::usize::MAX),
             Suggestion {
                 rating: 1233,
                 inputs: vec![Input::HD; 4],
             }
         );
-        assert_eq!(handle.suggestion(MoveId(7), 1).inputs, vec![Input::HD; 1]);
-        assert_eq!(handle.suggestion(MoveId(7), 2).inputs, vec![Input::HD; 2]);
+        assert_eq!(
+            handle.suggestion(MoveId::n(7), 1).inputs,
+            vec![Input::HD; 1]
+        );
+        assert_eq!(
+            handle.suggestion(MoveId::n(7), 2).inputs,
+            vec![Input::HD; 2]
+        );
     }
 
     #[test]
@@ -346,9 +334,9 @@ mod test {
         let (sink, mut handle) = Analysis::new(spam_hd_traces);
         example_analysis(sink);
         handle.wait();
-        assert_eq!(handle.cmp(MoveId(6), MoveId(6)), Equal);
-        assert_eq!(handle.cmp(MoveId(6), MoveId(7)), Greater);
-        assert_eq!(handle.cmp(MoveId(7), MoveId(6)), Less);
+        assert_eq!(handle.cmp(MoveId::n(6), MoveId::n(6)), Equal);
+        assert_eq!(handle.cmp(MoveId::n(6), MoveId::n(7)), Greater);
+        assert_eq!(handle.cmp(MoveId::n(7), MoveId::n(6)), Less);
     }
 
     #[test]
@@ -357,7 +345,7 @@ mod test {
         assert_eq!(handle.stats(), None);
         let s = Stats {
             iterations: 1,
-            fringe_nodes: 2,
+            nodes: 2,
             time_taken: std::time::Duration::from_millis(300),
         };
         sink.finish(s.clone());

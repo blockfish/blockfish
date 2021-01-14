@@ -8,6 +8,10 @@ use std::collections::HashSet;
 /// to get it into place.
 #[derive(Clone)]
 pub struct Place<'s> {
+    /// Index of this placement among list of placements. Running `PlaceFinder` with
+    /// identical configuration will return `Place`s with the same indexes, so this number
+    /// can be used to identify this placement.
+    pub idx: usize,
     /// The shape being placed.
     pub shape: ShapeRef<'s>,
     /// The final location / orientation for this placement.
@@ -17,10 +21,10 @@ pub struct Place<'s> {
 }
 
 impl<'s> Place<'s> {
-    /// Constructs a new `Place` from shape, transform. If `did_hold` is `true`, then adds
-    /// `Hold` to the input list before any other inputs.
+    /// Constructs a new `Place`.
     pub fn new(shape: ShapeRef<'s>, tf: Transform, did_hold: bool) -> Self {
         Self {
+            idx: std::usize::MAX,
             shape,
             tf,
             did_hold,
@@ -34,7 +38,7 @@ impl<'s> Place<'s> {
     }
 
     /// Simulates the input `inp` on this placement. If the input succeeds without being
-    /// blocked by matrix `mat`, then returns `Some(updated_input)`. If the input is
+    /// blocked by matrix `mat`, then returns `Some(updated_place)`. If the input is
     /// invalid, returns `None`.
     fn input(&self, matrix: &BasicMatrix, input: Input) -> Option<Self> {
         let tf = self.shape.try_input(matrix, self.tf, input)?;
@@ -50,7 +54,7 @@ impl<'s> Place<'s> {
 pub struct PlaceFinder<'s> {
     shtb: &'s ShapeTable,
     matrix: BasicMatrix,
-    // next placements to scan
+    // next placements to try (depth-first search)
     queue: Vec<Place<'s>>,
     // prevent search cycles
     places_seen: HashSet<(Color, Transform)>,
@@ -81,8 +85,8 @@ impl<'s> PlaceFinder<'s> {
         self.queue.clear();
     }
 
-    /// Configures this iterator to produce placements for the shape described by
-    /// `color`. PlaceFinder for this shape will require hold if `hold` is `true`.
+    /// Configures this iterator to start producing placements for the shape described by
+    /// `color`. Placements for this shape will require hold if `hold` is `true`.
     pub fn push_shape(&mut self, color: Color, hold: bool) {
         let shape = match self.shtb.shape(color) {
             Some(shape) => shape,
@@ -94,7 +98,8 @@ impl<'s> PlaceFinder<'s> {
         for r in Orientation::iter_all() {
             for j in shape.valid_cols(r, self.matrix.cols()) {
                 let i = shape.peak(&self.matrix, j, r);
-                self.queue.push(Place::new(shape, (i, j, r), hold));
+                let pl = Place::new(shape, (i, j, r), hold);
+                self.queue.push(pl);
             }
         }
     }
@@ -109,7 +114,12 @@ impl<'s> PlaceFinder<'s> {
     }
 
     fn pop(&mut self) -> Option<Place<'s>> {
-        self.queue.pop()
+        self.queue.pop().map(|mut pl| {
+            // number of places in `normals_seen` == number of places returned so far
+            // == index of the next (valid) place
+            pl.idx = self.normals_seen.len();
+            pl
+        })
     }
 
     /// Returns `true` if `pl` has already been visited, otherwise marks it as visited.
@@ -128,13 +138,12 @@ impl<'s> Iterator for PlaceFinder<'s> {
     type Item = Place<'s>;
     fn next(&mut self) -> Option<Place<'s>> {
         loop {
-            let node = self.pop()?;
-            if self.is_cycle(&node) {
-                continue;
-            }
-            self.expand(&node);
-            if !self.is_repeat(&node) {
-                return Some(node);
+            let pl = self.pop()?;
+            if !self.is_cycle(&pl) {
+                self.expand(&pl);
+                if !self.is_repeat(&pl) {
+                    return Some(pl);
+                }
             }
         }
     }
@@ -156,6 +165,18 @@ mod test {
             pfind.push_shape(c, true);
         }
         pfind
+    }
+
+    #[test]
+    fn test_placements_idx() {
+        let snapshot = Snapshot {
+            queue: vec![Color::n('O')],
+            hold: Some(Color::n('S')),
+            matrix: BasicMatrix::with_cols(10),
+        };
+        for (idx, pl) in placements(&srs(), snapshot).enumerate() {
+            assert_eq!(pl.idx, idx);
+        }
     }
 
     #[test]
