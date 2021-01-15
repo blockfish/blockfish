@@ -62,6 +62,7 @@ pub use analysis::{Analysis, AnalysisDone, MoveId};
 pub struct AI {
     config: Config,
     shape_table: std::sync::Arc<ShapeTable>,
+    all_tx: Option<std::sync::mpsc::Sender<Suggestion>>,
 }
 
 impl AI {
@@ -70,6 +71,7 @@ impl AI {
         Self {
             config,
             shape_table: std::sync::Arc::new(srs()),
+            all_tx: None,
         }
     }
 
@@ -83,6 +85,18 @@ impl AI {
             self.shape_table.clone(),
             self.config.clone(),
             snapshot.into(),
+            self.all_tx.take(),
         )
+    }
+
+    /// Configures the next analysis (via `analyze()`) to send every suggestion it
+    /// encounters to a non-blocking channel. Returns the rx end of that channel.
+    ///
+    /// NOTE: Even rejected suggestions are sent to this channel; this channel should just
+    /// be used for diagnostic purposes.
+    pub fn listen_all(&mut self) -> std::sync::mpsc::Receiver<Suggestion> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.all_tx = Some(tx);
+        rx
     }
 }

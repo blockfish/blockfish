@@ -2,10 +2,10 @@ use crate::{
     controls::{Action, EngineOp, GameOp, TreeOp},
     view::View,
 };
+use bitflags::bitflags;
 use block_stacker::Stacker;
 use blockfish::{ai, Parameters, StackerExt as _};
-
-use bitflags::bitflags;
+use std::sync::mpsc;
 
 // limit on number of times to poll per frame -- prevents lagging out the UI thread.
 const MAX_POLLS_PER_FRAME: u32 = 64;
@@ -100,8 +100,7 @@ impl<'v> Controller<'v> {
     /// state.
     fn consult_engine(&mut self) {
         if let Some(trie) = self.trie.as_mut() {
-            // TODO: configure `self.ai` to push nodes to some channel that trie can see??
-            trie.reroot(self.stacker.clone(), &self.ai.config().parameters);
+            trie.init(&mut self.ai, self.stacker.clone());
         }
         self.analysis = Some(Analysis::new(&mut self.ai, self.stacker.clone()));
     }
@@ -116,11 +115,14 @@ impl<'v> Controller<'v> {
 
     /// Polls the engine process for any updates to its progress.
     pub fn poll_engine(&mut self) {
+        let mut upd = Update::empty();
         if let Some(an) = self.analysis.as_mut() {
-            if an.poll() {
-                self.update_view(Update::ENGINE);
+            upd.set(Update::AI, an.poll());
+            if let Some(trie) = self.trie.as_mut() {
+                upd.set(Update::TRIE, trie.poll());
             }
         }
+        self.update_view(upd);
     }
 
     /// Save the current state to the undo list.
@@ -159,30 +161,22 @@ impl<'v> Controller<'v> {
         match op {
             GameOp::MoveLeft | GameOp::MoveRight => {
                 let dx = if op == GameOp::MoveLeft { -1 } else { 1 };
-                if self.stacker.move_horizontal(dx) {
-                    upd |= Update::PIECE;
-                }
+                upd.set(Update::PIECE, self.stacker.move_horizontal(dx));
             }
             GameOp::RotateCCW | GameOp::RotateCW => {
                 let dr = if op == GameOp::RotateCCW { -1 } else { 1 };
-                if self.stacker.rotate(dr) {
-                    upd |= Update::PIECE;
-                }
+                upd.set(Update::PIECE, self.stacker.rotate(dr));
             }
             GameOp::SonicDrop => {
-                if self.stacker.sonic_drop() {
-                    upd |= Update::PIECE;
-                }
+                upd.set(Update::PIECE, self.stacker.sonic_drop());
             }
             GameOp::Hold => {
-                if self.stacker.hold() {
-                    upd |= Update::PIECE | Update::QUEUE;
-                }
+                upd.set(Update::PIECE | Update::QUEUE, self.stacker.hold());
             }
             GameOp::HardDrop => {
                 self.undo_save();
                 self.hard_drop();
-                upd |= Update::STACKER;
+                upd.set(Update::STACKER, true);
             }
             GameOp::Reset => {
                 let ruleset = self.stacker.ruleset().clone();
@@ -192,21 +186,21 @@ impl<'v> Controller<'v> {
                 self.progress = Progress::new();
                 self.undo_list.clear();
                 self.undo_save();
-                upd |= Update::STACKER;
+                upd.set(Update::STACKER, true);
             }
             GameOp::Undo => {
                 self.undo_restore();
                 if self.undo_list.is_empty() {
                     self.undo_save();
                 }
-                upd |= Update::STACKER;
+                upd.set(Update::STACKER, true);
             }
         }
 
         // run a new analysis if the matrix contents were changed
         if self.analysis.is_some() && upd.intersects(Update::MATRIX) {
             self.consult_engine();
-            upd |= Update::ENGINE;
+            upd.set(Update::ENGINE, true);
         }
 
         self.update_view(upd);
@@ -233,27 +227,21 @@ impl<'v> Controller<'v> {
         let mut upd = Update::empty();
         match op {
             EngineOp::Toggle => {
-                upd |= Update::ENGINE;
+                upd.set(Update::ENGINE, true);
                 self.disable_engine();
             }
             EngineOp::Next | EngineOp::Prev => {
                 let delta = if op == EngineOp::Prev { -1 } else { 1 };
-                if an.nav(delta, 0) {
-                    upd |= Update::AI;
-                }
+                upd.set(Update::AI, an.nav(delta, 0));
                 self.analysis = Some(an);
             }
             EngineOp::StepForward | EngineOp::StepBackward => {
                 let step = if op == EngineOp::StepBackward { -1 } else { 1 };
-                if an.nav(0, step) {
-                    upd |= Update::AI;
-                }
+                upd.set(Update::AI, an.nav(0, step));
                 self.analysis = Some(an);
             }
             EngineOp::Goto => {
-                if an.go_to(&mut self.stacker) {
-                    upd |= Update::STACKER;
-                }
+                upd.set(Update::STACKER, an.go_to(&mut self.stacker));
                 self.analysis = Some(an);
             }
             EngineOp::AutoPlay => {
@@ -261,7 +249,7 @@ impl<'v> Controller<'v> {
                     self.undo_save();
                     self.hard_drop();
                     self.consult_engine();
-                    upd |= Update::STACKER | Update::ENGINE;
+                    upd.set(Update::STACKER | Update::ENGINE, true);
                 } else {
                     self.analysis = Some(an);
                 }
@@ -291,29 +279,27 @@ impl<'v> Controller<'v> {
         let mut upd = Update::empty();
         match op {
             TreeOp::Toggle => {
-                upd |= Update::TRIE;
+                upd.set(Update::TRIE, true);
                 self.trie = None;
             }
             TreeOp::OverEntry(idx) => {
                 trie.set_hover(Some(idx));
-                upd |= Update::TRIE;
+                upd.set(Update::TRIE, true);
                 self.trie = Some(trie);
             }
             TreeOp::Out => {
                 trie.set_hover(None);
                 // display the analysis preview again after hovering away from trie
-                upd |= Update::AI;
+                upd.set(Update::AI, true);
                 self.trie = Some(trie);
             }
             TreeOp::ClickEntry(idx) => {
-                if trie.expand(idx) {
-                    upd |= Update::TRIE;
-                }
+                upd.set(Update::TRIE, trie.expand(idx));
                 self.trie = Some(trie);
             }
             TreeOp::ScrollBy(dy) => {
                 trie.scroll_by(dy);
-                upd |= Update::TRIE;
+                upd.set(Update::TRIE, true);
                 self.trie = Some(trie);
             }
         }
@@ -412,8 +398,14 @@ impl Analysis {
         let mut updated = false;
         for _ in 0..MAX_POLLS_PER_FRAME {
             match an.poll() {
-                Ok(Some(m_id)) => updated |= self.update(m_id, &an),
-                Ok(None) => break,
+                Ok(Some(m_id)) => {
+                    updated |= self.update(m_id, &an);
+                }
+
+                Ok(None) => {
+                    break;
+                }
+
                 Err(ai::AnalysisDone) => {
                     log::info!("analysis finished");
                     self.status.1 = an.stats().map(|stats| {
@@ -441,7 +433,9 @@ impl Analysis {
                 self.moves.last_mut().unwrap()
             }
         };
+
         let sugg = analysis.suggestion(m_id, std::usize::MAX);
+        // update move and re-sort
         mov.rating = sugg.rating;
         mov.inputs = sugg.inputs;
         // unstable sort OK because `cmp` does not cause ties.
@@ -563,15 +557,16 @@ struct Trie {
     linear: Vec<TrieNodeId>,
     hover: Option<usize>,
     scroll: i32,
+    rx: Option<mpsc::Receiver<ai::Suggestion>>,
 }
 
 struct TrieNode {
     key: Vec<blockfish::Input>,
     stacker: Stacker,
     depth: usize,
-    eval: Option<ai::Eval>,
+    eval: ai::Eval,
+    eval_score: i64,
     rating: Option<i64>,
-    best_rating: i64,
     count: usize,
     children: Vec<TrieNodeId>,
     expanded: bool,
@@ -587,70 +582,101 @@ impl Trie {
             linear: vec![],
             hover: None,
             scroll: 0,
+            rx: None,
         }
     }
 
     fn clear(&mut self) {
         self.nodes.clear();
         self.linear.clear();
+        self.rx = None;
     }
 
-    fn reroot(&mut self, mut stacker: Stacker, params: &Parameters) {
-        stacker.freeze();
-        stacker.reset_piece();
-        let root = TrieNode::new(vec![], stacker, std::usize::MAX);
-        self.nodes.clear();
-        self.nodes.push(root);
+    fn init(&mut self, ai: &mut ai::AI, mut stacker: Stacker) {
+        self.clear();
+        self.nodes.push({
+            stacker.freeze();
+            stacker.reset_piece();
+            TrieNode::new(vec![], stacker, std::usize::MAX)
+        });
         self.linearize();
-        self.parameters.clone_from(params);
+        self.parameters.clone_from(&ai.config().parameters);
+        self.rx = Some(ai.listen_all());
     }
 
     fn set_hover(&mut self, hover: Option<usize>) {
         self.hover = hover;
     }
 
-    #[allow(unused)]
-    fn insert(&mut self, inputs: &[blockfish::Input], rating: i64) {
+    fn poll(&mut self) -> bool {
+        let rx = match self.rx.take() {
+            Some(rx) => rx,
+            None => return false,
+        };
+        let mut updated = false;
+        for _ in 0..MAX_POLLS_PER_FRAME {
+            match rx.try_recv() {
+                Ok(sugg) => {
+                    self.insert(&sugg.inputs, Some(sugg.rating));
+                    updated = true;
+                }
+                Err(_) => break,
+            }
+        }
+        if updated {
+            self.linearize();
+        }
+        self.rx = Some(rx);
+        updated
+    }
+
+    fn insert(&mut self, inputs: &[blockfish::Input], rating: Option<i64>) {
         if self.nodes.is_empty() {
             // cannot insert if no root
             return;
         }
 
+        assert_eq!(inputs.last(), Some(&blockfish::Input::HD));
+        let inputs = &inputs[..inputs.len() - 1];
+
         let mut stacker = self[0].stacker.clone();
-        let mut node_id = 0; // root
+        let mut parent_id = 0; // 0 = index of root node
+        let mut trace = vec![0];
+
         for (depth, prefix) in inputs.split(|&i| i == blockfish::Input::HD).enumerate() {
             stacker.run(prefix.iter().cloned());
-
-            // create new child if needed
-            let mut children = std::mem::take(&mut self[node_id].children);
-            let child_id = children
-                .iter()
-                .find(|&&id| &*self[id].key == prefix)
-                .cloned();
-            let child_id = child_id.unwrap_or_else(|| {
-                let node = TrieNode::new(prefix.to_vec(), stacker.clone(), depth);
-                self.nodes.push(node);
-                let id = self.nodes.len() - 1;
-                children.push(id);
-                id
-            });
-
-            // update rating & leaf count
-            self[child_id].best_rating = std::cmp::min(self[child_id].best_rating, rating);
+            // get or insert next node
+            let mut children = std::mem::take(&mut self[parent_id].children);
+            let child_id = match children.iter().find(|&&id| &*self[id].key == prefix) {
+                Some(&id) => id,
+                None => {
+                    let mut child = TrieNode::new(prefix.to_vec(), stacker.clone(), depth);
+                    child.update_eval(&self.parameters);
+                    let id = self.nodes.len();
+                    self.nodes.push(child);
+                    children.push(id);
+                    id
+                }
+            };
+            self[parent_id].children = children;
             self[child_id].count += 1;
-            // re-sort child nodes
-            children.sort_by_key(|&id| self[id].best_rating);
-            self[node_id].children = children;
-            node_id = child_id;
+            trace.push(child_id);
+            parent_id = child_id;
+            // `prefix` doesn't contain HD so we need to simulate it here
             stacker.hard_drop();
         }
 
-        // fixup final node
-        self[node_id].eval = stacker.snapshot().as_ref().map(ai::static_eval);
-        self[node_id].rating = Some(rating);
-        // re-build the linear tree repr
-        // TODO: optimization: dont linearize if the update changed an unexpanded node
-        self.linearize();
+        if let Some(rating) = rating {
+            self[parent_id].rating = Some(rating);
+        }
+        // back-up ratings
+        while let Some(node_id) = trace.pop() {
+            let mut children = std::mem::take(&mut self[node_id].children);
+            children.sort_by_key(|&id| &self[id]);
+            let best_child_rating = children.get(0).and_then(|&id| self[id].rating);
+            self[node_id].rating = best_child_rating.or(self[node_id].rating);
+            self[node_id].children = children;
+        }
     }
 
     fn expand(&mut self, entry_idx: usize) -> bool {
@@ -688,14 +714,11 @@ impl Trie {
 
         view.set_tree_hover(self.hover);
         if let Some(&hover_id) = self.hover.and_then(|idx| self.linear.get(idx)) {
-            let preview = &self[hover_id].stacker;
+            let node = &self[hover_id];
+            let preview = &node.stacker;
             view.set_engine_matrix(preview.matrix());
             view.set_engine_piece(preview.current_piece_ghost());
-            if let Some(eval) = self[hover_id].eval.as_ref() {
-                view.set_engine_overlay_score(eval, &self.parameters);
-            } else {
-                view.clear_engine_overlay();
-            }
+            view.set_engine_overlay_score(&node.eval, &self.parameters);
         }
 
         let (scroll_min, scroll_max) = view.tree_scroll_bounds().into_inner();
@@ -723,12 +746,21 @@ impl TrieNode {
             key,
             stacker,
             depth,
-            eval: None,
+            eval: ai::Eval::default(),
+            eval_score: std::i64::MAX,
             rating: None,
-            best_rating: std::i64::MAX,
             count: 0,
             children: vec![],
             expanded: false,
+        }
+    }
+
+    fn update_eval(&mut self, params: &Parameters) {
+        let mut stacker = self.stacker.clone();
+        stacker.hard_drop();
+        if let Some(ss) = stacker.snapshot() {
+            self.eval = ai::static_eval(&ss);
+            self.eval_score = self.eval.score(params);
         }
     }
 
@@ -737,8 +769,33 @@ impl TrieNode {
             piece: self.stacker.current_piece_type().unwrap_or('H'),
             depth: self.depth,
             count: self.count,
+            score: self.eval_score,
             rating: self.rating,
-            best_rating: self.best_rating,
         }
+    }
+}
+
+impl Eq for TrieNode {}
+
+impl Ord for TrieNode {
+    fn cmp(&self, rhs: &Self) -> std::cmp::Ordering {
+        match (self.rating, rhs.rating) {
+            (Some(lhs), Some(rhs)) => lhs.cmp(&rhs),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
+impl PartialEq for TrieNode {
+    fn eq(&self, rhs: &Self) -> bool {
+        self.rating == rhs.rating
+    }
+}
+
+impl PartialOrd for TrieNode {
+    fn partial_cmp(&self, rhs: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(rhs))
     }
 }

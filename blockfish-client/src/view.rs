@@ -42,8 +42,8 @@ pub struct TreeNode {
     pub piece: PieceType,
     pub depth: usize,
     pub count: usize,
+    pub score: i64,
     pub rating: Option<i64>,
-    pub best_rating: i64,
 }
 
 /// Represents window close "event".
@@ -278,7 +278,7 @@ impl<'r> View<'r> {
     ///
     /// `seq`: `(idx, len)` of this sequence among other suggestions
     /// `pos`: `(idx, len)` of the step in the sequence being displayed
-    /// `rating`: score at end of sequence
+    /// `rating`: sequence rating
     pub fn set_engine_overlay(&mut self, seq: (usize, usize), pos: (usize, usize), rating: i64) {
         use std::fmt::Write;
         let mut line = format!("#{} of {}", seq.0 + 1, seq.1);
@@ -890,13 +890,11 @@ impl<'r> TreeNodeLabels<'r> {
 
     fn set(&mut self, node: &TreeNode) {
         use crate::util::text_fmt::*;
-        self.rating.set(&{
-            if node.rating == Some(node.best_rating) {
-                format!("{}", node.best_rating)
-            } else {
-                format!("{}\u{2192}{}", maybe(node.rating, "?"), node.best_rating)
-            }
-        });
+        self.rating.set(&format!(
+            "{}\u{2192}{}",
+            node.score,
+            maybe(node.rating, "?")
+        ));
         self.count.set(&format!("{}", plural(node.count, "node")));
     }
 

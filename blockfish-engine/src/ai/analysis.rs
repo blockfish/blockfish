@@ -5,11 +5,11 @@ use std::{
     sync::{mpsc, Arc, RwLock},
 };
 
-use super::b_star::{RatingChanged, Search};
+use super::b_star::{Search, Step};
 
 // Analysis handle
 
-// re-export MoveId
+// Re-exports
 pub use super::b_star::MoveId;
 
 /// A handle to a blockfish analysis running in the background.
@@ -18,6 +18,7 @@ pub struct Analysis {
     trace_inputs: Box<TraceInputsFn>,
     stats: Arc<RwLock<Option<Stats>>>,
     rx: mpsc::Receiver<Msg>,
+    all_tx: Option<mpsc::Sender<Suggestion>>,
 }
 
 /// Indicates that the analysis has finished and no new updates to any moves will happen.
@@ -35,7 +36,7 @@ struct Move {
 /// Message type sent from worker thread to `Analysis` handle.
 #[derive(Debug, Eq, PartialEq)]
 struct Msg {
-    move_id: MoveId,
+    changed_move_id: Option<MoveId>,
     mov: Move,
 }
 
@@ -48,10 +49,7 @@ struct AnalysisSink {
 impl Analysis {
     /// Constructs a `(sink, handle)` pair. The analysis handle will use `trace_inputs` as
     /// the algorithm for computing inputs from a trace.
-    fn new<TraceInputs>(trace_inputs: TraceInputs) -> (AnalysisSink, Self)
-    where
-        TraceInputs: Fn(&[usize]) -> Vec<Input> + 'static,
-    {
+    fn new(trace_inputs: impl Fn(&[usize]) -> Vec<Input> + 'static) -> (AnalysisSink, Self) {
         let (tx, rx) = mpsc::sync_channel(256);
         let stats = Arc::new(RwLock::new(None));
         (
@@ -62,6 +60,7 @@ impl Analysis {
             Analysis {
                 moves: HashMap::with_capacity(128),
                 trace_inputs: Box::new(trace_inputs),
+                all_tx: None,
                 stats,
                 rx,
             },
@@ -69,9 +68,23 @@ impl Analysis {
     }
 
     /// Processes a message recieved from the worker thread.
-    fn recv(&mut self, Msg { move_id, mov }: Msg) -> MoveId {
-        self.moves.insert(move_id, mov);
-        move_id
+    fn recv(&mut self, msg: Msg) -> Option<MoveId> {
+        // send to all-suggestions channel if listening
+        if let Some(all_tx) = self.all_tx.as_ref() {
+            let inputs = (self.trace_inputs)(&msg.mov.trace);
+            let rating = msg.mov.rating;
+            if all_tx.send(Suggestion { inputs, rating }).is_err() {
+                log::warn!("all-suggestions channel dropped");
+                self.all_tx = None;
+            }
+        }
+
+        // update moves
+        if let Some(move_id) = msg.changed_move_id {
+            self.moves.insert(move_id, msg.mov);
+        }
+
+        msg.changed_move_id
     }
 
     /// Returns all known moves in arbitrary order. To get the best move, use `.min_by()`
@@ -93,10 +106,16 @@ impl Analysis {
     /// changed. Returns `Ok(None)` if no progress was made since the last poll. Returns
     /// `Err(AnalysisDone)` if the analysis is over.
     pub fn poll(&mut self) -> Result<Option<MoveId>, AnalysisDone> {
-        match self.rx.try_recv() {
-            Ok(msg) => Ok(Some(self.recv(msg))),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => Err(AnalysisDone),
+        loop {
+            match self.rx.try_recv() {
+                Ok(msg) => {
+                    if let Some(move_id) = self.recv(msg) {
+                        return Ok(Some(move_id));
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => return Ok(None),
+                Err(mpsc::TryRecvError::Disconnected) => return Err(AnalysisDone),
+            }
         }
     }
 
@@ -153,12 +172,14 @@ fn analysis(shtb: Arc<ShapeTable>, cfg: Config, root: State, sink: AnalysisSink)
     search.start(root);
 
     while search.node_count() < cfg.search_limit {
+        let msg;
         match search.step() {
-            Ok(Some(RatingChanged {
+            Ok(Step::RatingChanged {
                 move_id,
                 rating,
                 trace,
-            })) => {
+            }) => {
+                iteration += 1;
                 log::debug!(
                     "{:<2?} --> {:>3?}{} iter {}",
                     move_id,
@@ -167,22 +188,40 @@ fn analysis(shtb: Arc<ShapeTable>, cfg: Config, root: State, sink: AnalysisSink)
                     iteration
                 );
                 global_min = std::cmp::min(rating, global_min);
-
-                if !sink.send(Msg {
-                    move_id,
+                msg = Some(Msg {
+                    changed_move_id: Some(move_id),
                     mov: Move {
                         iteration,
                         rating,
                         trace,
                     },
-                }) {
-                    log::warn!("handle disconnected mid-analysis");
-                    return;
-                }
+                });
             }
 
-            Ok(None) => iteration += 1,
+            Ok(Step::SequenceRejected { trace, rating }) => {
+                iteration += 1;
+                msg = Some(Msg {
+                    changed_move_id: None,
+                    mov: Move {
+                        iteration,
+                        rating,
+                        trace,
+                    },
+                });
+            }
+
+            Ok(Step::Other) => {
+                msg = None;
+            }
+
             Err(_) => break,
+        }
+
+        if let Some(msg) = msg {
+            if !sink.send(msg) {
+                log::warn!("handle disconnected mid-analysis");
+                return;
+            }
         }
     }
 
@@ -224,13 +263,19 @@ fn reconstruct_inputs(shtb: &ShapeTable, state0: State, trace: &[usize]) -> Vec<
 // Putting it all together
 
 /// Spawns a new analysis, returning a handle to it.
-pub fn spawn(shtb: Arc<ShapeTable>, cfg: Config, root: State) -> Analysis {
+pub fn spawn(
+    shtb: Arc<ShapeTable>,
+    cfg: Config,
+    root: State,
+    all_suggestions_tx: Option<mpsc::Sender<Suggestion>>,
+) -> Analysis {
     let trace_inputs = {
         let shtb = shtb.clone();
         let state0 = root.clone();
         move |t: &[usize]| reconstruct_inputs(&shtb, state0.clone(), t)
     };
-    let (sink, handle) = Analysis::new(trace_inputs);
+    let (sink, mut handle) = Analysis::new(trace_inputs);
+    handle.all_tx = all_suggestions_tx;
     std::thread::spawn(move || analysis(shtb, cfg, root, sink));
     handle
 }
@@ -253,7 +298,7 @@ mod test {
             trace: vec![6, 7, 8],
         };
         assert!(sink.send(Msg {
-            move_id: MoveId::n(6),
+            changed_move_id: Some(MoveId::n(6)),
             mov
         }));
         assert_eq!(handle.poll(), Ok(Some(MoveId::n(6))));
@@ -265,7 +310,7 @@ mod test {
 
     fn example_analysis(sink: AnalysisSink) {
         assert!(sink.send(Msg {
-            move_id: MoveId::n(6),
+            changed_move_id: Some(MoveId::n(6)),
             mov: Move {
                 iteration: 1,
                 rating: 1234,
@@ -273,7 +318,7 @@ mod test {
             }
         }));
         assert!(sink.send(Msg {
-            move_id: MoveId::n(7),
+            changed_move_id: Some(MoveId::n(7)),
             mov: Move {
                 iteration: 2,
                 rating: 1233,
@@ -281,11 +326,19 @@ mod test {
             }
         }));
         assert!(sink.send(Msg {
-            move_id: MoveId::n(6),
+            changed_move_id: Some(MoveId::n(6)),
             mov: Move {
                 iteration: 3,
                 rating: 1233,
                 trace: vec![6, 7, 9],
+            }
+        }));
+        assert!(sink.send(Msg {
+            changed_move_id: None,
+            mov: Move {
+                iteration: 3,
+                rating: 1239,
+                trace: vec![6, 7],
             }
         }));
     }
@@ -350,5 +403,36 @@ mod test {
         };
         sink.finish(s.clone());
         assert_eq!(handle.stats(), Some(s));
+    }
+
+    #[test]
+    fn test_analysis_all_suggestions() {
+        let (sink, mut handle) = Analysis::new(spam_hd_traces);
+        let (all_tx, all_rx) = mpsc::channel();
+        handle.all_tx = Some(all_tx);
+        example_analysis(sink);
+        handle.wait();
+        std::mem::drop(handle); // drop all_tx
+        assert_eq!(
+            all_rx.iter().collect::<Vec<_>>(),
+            vec![
+                Suggestion {
+                    rating: 1234,
+                    inputs: vec![Input::HD; 3],
+                },
+                Suggestion {
+                    rating: 1233,
+                    inputs: vec![Input::HD; 4],
+                },
+                Suggestion {
+                    rating: 1233,
+                    inputs: vec![Input::HD; 3],
+                },
+                Suggestion {
+                    rating: 1239,
+                    inputs: vec![Input::HD; 2],
+                },
+            ]
+        );
     }
 }

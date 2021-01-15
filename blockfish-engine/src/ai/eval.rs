@@ -4,7 +4,7 @@ use std::ops::Range;
 
 // Evaluations
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Eval {
     pub rows: u16,
     pub piece_estimate: u16,

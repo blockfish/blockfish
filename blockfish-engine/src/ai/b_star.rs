@@ -66,16 +66,31 @@ pub struct Search<'s> {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct MoveId(u8);
 
-/// Indicates that the rating for a particular move has changed since the last iteration
-/// of the analysis.
+/// Indicates what happened as a result of a step of the algorithm. Returned by
+/// `Search::step()`.
 #[derive(Clone, Debug)]
-pub struct RatingChanged {
-    /// Move whos rating has changed.
-    pub move_id: MoveId,
-    /// Placement trace for the new best-sequence for this move.
-    pub trace: Vec<usize>,
-    /// The new rating for this move.
-    pub rating: i64,
+pub enum Step {
+    /// Indicates that the rating for a particular move has changed since the last iteration
+    /// of the analysis.
+    RatingChanged {
+        /// Move whos rating has changed.
+        move_id: MoveId,
+        /// Placement trace for the new best-sequence for this move.
+        trace: Vec<usize>,
+        /// The new rating for this move.
+        rating: i64,
+    },
+
+    /// Indicates a node was discovered but was rejected since it is not better than the
+    /// current best node for the move.
+    SequenceRejected {
+        /// Placement trace for this sequence.
+        trace: Vec<usize>,
+        /// The sequence's rating.
+        rating: i64,
+    },
+
+    Other,
 }
 
 /// Indicates that the search is over since there are no more placements left to analyze.
@@ -115,12 +130,19 @@ impl<'s> Search<'s> {
     /// Runs one iteration of the algorithm. Returns `Ok(Some(rc))` it move rating was
     /// modified, `Ok(None)` if work was performed but no ratings were modified yet, or
     /// `Err(SearchTerminated)` if there are no more nodes remaining to be processed.
-    pub fn step(&mut self) -> Result<Option<RatingChanged>, SearchTerminated> {
+    pub fn step(&mut self) -> Result<Step, SearchTerminated> {
         if let Some(node) = self.node.take() {
             // best-first iteration phase
             if node.is_terminal() {
                 // stop at terminal nodes
-                return Ok(self.back_up(node));
+                return Ok(match self.back_up(node) {
+                    (rating, trace, Some(move_id)) => Step::RatingChanged {
+                        move_id,
+                        rating,
+                        trace,
+                    },
+                    (rating, trace, None) => Step::SequenceRejected { rating, trace },
+                });
             }
             // expansion
             if let Some(pl) = self.pfind.next() {
@@ -134,7 +156,7 @@ impl<'s> Search<'s> {
             self.select();
             self.pop()?;
         }
-        Ok(None)
+        Ok(Step::Other)
     }
 
     /// Adds `node` to the fringe set at the current level index.
@@ -170,21 +192,24 @@ impl<'s> Search<'s> {
             .unwrap_or(0);
     }
 
-    /// Propogates `node`'s rating back to the move at the root of this node. Returns
-    /// `Some(rating_changed)` if the best rating was updated as a result.
-    fn back_up(&mut self, node: Node) -> Option<RatingChanged> {
-        let move_id = MoveId(*node.trace.get(0)?);
-        let best = self.move_best.entry(move_id).or_insert(std::i64::MAX);
+    /// Propogates `node`'s rating back to the move at the root of this node.
+    fn back_up(&mut self, node: Node) -> (i64, Vec<usize>, Option<MoveId>) {
         let rating = node.rating();
-        if rating >= *best {
-            return None;
-        }
-        *best = rating;
-        Some(RatingChanged {
-            move_id,
-            rating,
-            trace: node.trace().collect(),
-        })
+        let trace = node.trace().collect();
+        let move_id = match node.trace.get(0) {
+            Some(&idx) => {
+                let m_id = MoveId(idx as _);
+                let best = self.move_best.entry(m_id).or_insert(std::i64::MAX);
+                if rating < *best {
+                    *best = rating;
+                    Some(m_id)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        (rating, trace, move_id)
     }
 }
 
