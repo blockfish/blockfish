@@ -1,20 +1,30 @@
-syntax = "proto2";
+syntax = "proto3";
 
 package blockfish;
+
+enum Input {
+  LEFT = 0;
+  RIGHT = 1;
+  CW = 2;
+  CCW = 3;
+  HOLD = 4;
+  SD = 5;
+  HD = 6;
+}
 
 message Snapshot {
   string hold = 0;
   string queue = 1;
-  repeated string matrix = 2;
+  repeated string rows = 2;
 }
 
 message Suggestion {
   sint64 rating = 0;
-  string inputs = 1;
+  repeated Input inputs = 1;
 }
 
 message Stats {
-  int64 nodes = 0;
+  uint64 nodes = 0;
   uint64 iters = 1;
   uint64 time_ms = 2;
 }
@@ -33,7 +43,7 @@ message Request {
   }
 
   message Analyze {
-    uint64 id = 0;
+    int64 id = 0;
     Snapshot snapshot = 1;
     optional uint32 max_results = 2;
     optional uint32 max_placements = 3;
@@ -50,13 +60,13 @@ message Response {
 
   message Greeting {
     string version = 0;
-    string motd = 0;
+    string motd = 1;
   }
 
   message Analysis {
-    uint64 id = 0;
-    repeated Suggestion suggestions = 1;
-    Stats stats = 2;
+    int64 id = 0;
+    Stats stats = 1;
+    repeated Suggestion suggestions = 2;
   }
 
   oneof res {
