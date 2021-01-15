@@ -1,0 +1,66 @@
+syntax = "proto2";
+
+package blockfish;
+
+message Snapshot {
+  string hold = 0;
+  string queue = 1;
+  repeated string matrix = 2;
+}
+
+message Suggestion {
+  sint64 rating = 0;
+  string inputs = 1;
+}
+
+message Stats {
+  int64 nodes = 0;
+  uint64 iters = 1;
+  uint64 time_ms = 2;
+}
+
+message Request {
+
+  message Config {
+    optional uint32 k_nodes = 0;
+  }
+
+  message Ruleset {
+    message SRS {}
+    oneof ruleset {
+      SRS srs = 0;
+    }
+  }
+
+  message Analyze {
+    uint64 id = 0;
+    Snapshot snapshot = 1;
+    optional uint32 max_results = 2;
+    optional uint32 max_placements = 3;
+  }
+
+  oneof req {
+    Config set_config = 0;
+    Ruleset set_ruleset = 1;
+    Analyze analyze = 2;
+  }
+}
+
+message Response {
+
+  message Greeting {
+    string version = 0;
+    string motd = 0;
+  }
+
+  message Analysis {
+    uint64 id = 0;
+    repeated Suggestion suggestions = 1;
+    Stats stats = 2;
+  }
+
+  oneof res {
+    Greeting greeting = 0;
+    Analysis finished = 1;
+  }
+}
