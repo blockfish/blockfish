@@ -13,64 +13,64 @@ enum Input {
 }
 
 message Snapshot {
-  string hold = 0;
-  string queue = 1;
-  repeated string rows = 2;
+  string hold = 1;
+  string queue = 2;
+  repeated string rows = 3;
 }
 
 message Suggestion {
-  sint64 rating = 0;
-  repeated Input inputs = 1;
+  sint64 rating = 1;
+  repeated Input inputs = 2;
 }
 
 message Stats {
-  uint64 nodes = 0;
-  uint64 iters = 1;
-  uint64 time_ms = 2;
+  uint64 nodes = 1;
+  uint64 iters = 2;
+  uint64 time_ms = 3;
 }
 
 message Request {
 
   message Config {
-    optional uint32 k_nodes = 0;
+    optional uint32 k_nodes = 1;
   }
 
   message Ruleset {
     message SRS {}
     oneof ruleset {
-      SRS srs = 0;
+      SRS srs = 1;
     }
   }
 
   message Analyze {
-    int64 id = 0;
-    Snapshot snapshot = 1;
-    optional uint32 max_results = 2;
-    optional uint32 max_placements = 3;
+    int64 id = 1;
+    Snapshot snapshot = 2;
+    optional uint32 max_results = 3;
+    optional uint32 max_placements = 4;
   }
 
   oneof req {
-    Config set_config = 0;
-    Ruleset set_ruleset = 1;
-    Analyze analyze = 2;
+    Config set_config = 1;
+    Ruleset set_ruleset = 2;
+    Analyze analyze = 3;
   }
 }
 
 message Response {
 
   message Greeting {
-    string version = 0;
-    string motd = 1;
+    string version = 1;
+    string motd = 2;
   }
 
   message Analysis {
-    int64 id = 0;
-    Stats stats = 1;
-    repeated Suggestion suggestions = 2;
+    int64 id = 1;
+    Stats stats = 2;
+    repeated Suggestion suggestions = 3;
   }
 
   oneof res {
-    Greeting greeting = 0;
-    Analysis finished = 1;
+    Greeting greeting = 1;
+    Analysis finished = 2;
   }
 }
