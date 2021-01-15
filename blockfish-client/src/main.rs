@@ -14,8 +14,6 @@ use blockfish::Config as BFConfig;
 use argh::FromArgs;
 use thiserror::Error;
 
-static VERSION: &'static str = "DEVELOPMENT BUILD";
-
 const DEFAULT_CONFIG_DIR: &str = "./config";
 
 // Error handling
@@ -189,7 +187,7 @@ fn entry(mut args: Args) -> Result<()> {
     let rules = std::rc::Rc::new(Ruleset::guideline());
     let ai = blockfish::ai::AI::new(args.ai_config());
     let stacker = block_stacker::Stacker::new(rules.clone(), args.game_config());
-    let view = view::View::new(resources, rules, controls, &theme, VERSION);
+    let view = view::View::new(resources, rules, controls, &theme);
     let mut ctl = controller::Controller::new(ai, view, stacker);
     let mut tmr = ctl.view().make_timer();
 

@@ -66,14 +66,13 @@ impl<'r> View<'r> {
         ruleset: Rc<Ruleset>,
         controls: Controls,
         theme: &Theme,
-        version_string: &str,
     ) -> Self {
         let rows = ruleset.visible_rows as u16;
         let cols = ruleset.cols as u16;
 
         let mut motd = Label::new();
         let mut help = [vec![], vec![]];
-        Self::set_motd(&mut motd, version_string);
+        Self::set_motd(&mut motd);
         Self::set_help_labels_controls(&mut help, &controls);
 
         Self {
@@ -99,8 +98,8 @@ impl<'r> View<'r> {
     }
 
     /// Generates the version-string heading text, setting `label` appropriately.
-    fn set_motd(label: &mut Label<'r>, version_string: &str) {
-        label.set(&format!("Blockfish {}", version_string));
+    fn set_motd(label: &mut Label<'r>) {
+        label.set(&format!("Blockfish {}", blockfish::version()));
     }
 
     /// Generates help text labels to display help for control scheme `controls`, setting

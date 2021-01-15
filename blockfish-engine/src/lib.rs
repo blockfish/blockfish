@@ -19,3 +19,9 @@ pub use stacker_util::StackerExt;
 
 #[cfg(feature = "gen-shtb")]
 pub use shape::ShapeTable;
+
+/// Returns Blockfish's build version string.
+pub fn version() -> &'static str {
+    let v = include_str!("../../support/version");
+    v.trim()
+}
