@@ -32,7 +32,7 @@ message Stats {
 message Request {
 
   message Config {
-    optional uint32 k_nodes = 1;
+    uint32 k_nodes = 1;
   }
 
   message Ruleset {
@@ -45,8 +45,8 @@ message Request {
   message Analyze {
     int64 id = 1;
     Snapshot snapshot = 2;
-    optional uint32 max_results = 3;
-    optional uint32 max_placements = 4;
+    uint32 max_results = 3;
+    uint32 max_placements = 4;
   }
 
   oneof req {
