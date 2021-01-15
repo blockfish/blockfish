@@ -116,6 +116,7 @@ dependencies = [
  "argh",
  "block-stacker",
  "log",
+ "pretty_env_logger",
  "protobuf",
  "protoc-rust",
  "red_union_find",
