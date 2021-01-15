@@ -20,9 +20,12 @@ pub use stacker_util::StackerExt;
 #[cfg(feature = "gen-shtb")]
 pub use shape::ShapeTable;
 
+#[cfg(feature = "protos")]
 mod protos_generated {
     include!(concat!(env!("OUT_DIR"), "/generated/mod.rs"));
 }
+
+#[cfg(feature = "protos")]
 pub use protos_generated::blockfish as protos;
 
 /// Returns Blockfish's build version string.
