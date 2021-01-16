@@ -20,4 +20,5 @@ let ss = {
 ai.analyze(ss, result => {
     console.log('result:');
     console.log(result);
+    ai.kill();
 });

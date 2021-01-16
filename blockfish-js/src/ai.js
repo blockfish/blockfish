@@ -6,7 +6,7 @@ class AI extends EventEmitter {
     constructor(ipc) {
         super();
         Object.assign(this, {
-            ipc: defaultIPC(ipc),
+            ipc: makeIPC(ipc),
             version: null,
             _init: false,
             _id: 0,
@@ -76,7 +76,9 @@ class AI extends EventEmitter {
     }
 }
 
-function defaultIPC(arg) {
+AI.DEFAULT_BLOCKFISH_PATH = 'blockfish';
+
+function makeIPC(arg) {
     if (arg === undefined) {
         arg = AI.DEFAULT_BLOCKFISH_PATH;
     }
@@ -120,7 +122,7 @@ function fromAnalysisProto(arg) {
 function fromSuggestionProto(arg) {
     return {
         rating: arg.getRating(),
-        inputs: arg.getInputsList().map(fromInputProto),
+        inputs: arg.getInputsList().map(fromInputProto).join(' '),
     };
 }
 
@@ -135,7 +137,5 @@ function fromInputProto(arg) {
     case protos.Input.HD: return 'hd';
     }
 }
-
-AI.DEFAULT_BLOCKFISH_PATH = 'blockfish';
 
 module.exports = AI;

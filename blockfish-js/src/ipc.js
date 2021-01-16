@@ -56,18 +56,12 @@ class IPC extends EventEmitter {
         if (this._killed) {
             return;
         }
-        let i = 0;
-        let writeCallback = () => {
-            if (cb && ++i == 2) {
-                cb();
-            }
-        };
         const chunk = req.serializeBinary();
         const lengthWriter = new jspb.BinaryWriter;
         lengthWriter.encoder_.writeUnsignedVarint32(chunk.length);
         const lengthChunk = lengthWriter.getResultBuffer();
-        this.subprocess.stdin.write(lengthChunk, writeCallback);
-        this.subprocess.stdin.write(chunk, writeCallback);
+        this.subprocess.stdin.write(lengthChunk);
+        this.subprocess.stdin.write(chunk, cb);
     }
 
     kill() {
