@@ -32,7 +32,7 @@ message Stats {
 message Request {
 
   message Config {
-    uint32 k_nodes = 1;
+    uint32 node_limit = 1;
   }
 
   message Ruleset {

@@ -17,7 +17,10 @@ let ss = {
     queue: "LOJI",
     matrix: "XXXXX_XXXXX\nX_XXXXXXXX",
 };
-ai.analyze(ss, result => {
+let cfg = {
+    node_limit: 30000,
+};
+ai.analyze(ss, cfg, result => {
     console.log('result:');
     console.log(result);
     ai.kill();

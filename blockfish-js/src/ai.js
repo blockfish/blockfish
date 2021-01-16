@@ -91,7 +91,7 @@ function makeIPC(arg) {
 
 function toConfigProto(arg) {
     let cfg = new protos.Request.Config;
-    cfg.setKNodes(arg.nodes || 0);
+    cfg.setNodeLimit(arg.node_limit || 0);
     return cfg;
 }
 

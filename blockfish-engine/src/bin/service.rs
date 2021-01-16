@@ -124,9 +124,7 @@ fn service(
 /// Handles a "set_config" request.
 fn set_config(ai: &mut blockfish::ai::AI, msg: protos::Request_Config) -> Result<()> {
     let cfg = ai.config_mut();
-    if msg.k_nodes != 0 {
-        cfg.search_limit = (msg.k_nodes as usize) * 1_000;
-    }
+    set_if_nonzero(&mut cfg.search_limit, msg.node_limit as usize);
     log::debug!("set config = {:?}", cfg);
     Ok(())
 }
@@ -145,8 +143,9 @@ fn analyze(
 ) -> Result<()> {
     let id = msg.id;
     let ss = from_snapshot_proto(msg.get_snapshot());
-    let count = max_if_zero(msg.max_results as usize);
-    let len = max_if_zero(msg.max_placements as usize);
+    let (mut count, mut len) = (std::usize::MAX, std::usize::MAX);
+    set_if_nonzero(&mut count, msg.max_results as usize);
+    set_if_nonzero(&mut len, msg.max_placements as usize);
     let mut handle = ai.analyze(ss);
     std::thread::spawn(move || {
         handle.wait();
@@ -163,11 +162,9 @@ fn analyze(
 // Below is all helper functions for converting between `protos::*` types
 //////////////////////////////////////////////////////////////////////////////////////////
 
-fn max_if_zero(x: usize) -> usize {
-    if x == 0 {
-        std::usize::MAX
-    } else {
-        x
+fn set_if_nonzero(y: &mut usize, x: usize) {
+    if x != 0 {
+        *y = x;
     }
 }
 
