@@ -1,14 +1,23 @@
 {
-  "name": "blockfish-js",
+  "name": "blockfish",
+  "description": "JS interface to Blockfish AI",
   "version": "0.1.0",
-  "description": "Blockfish Node JS interface",
-  "main": "index.js",
+  "author": "iitalics (https://github.com/iitalics)",
+  "license": "LGPL-2.1",
+  "homepage": "https://github.com/iitalics/blockfish",
+  "repository": "github:iitalics/blockfish",
+  "files": [
+    "package.json",
+    "index.js",
+    "generated/",
+    "src/"
+  ],
   "scripts": {
-      "protoc": "mkdir -p generated; protoc --js_out=import_style=commonjs,binary:generated -I.. ../blockfish.proto",
-      "doc": "find src -name '*.js' | xargs jsdoc"
+    "build": "test -d generated || npm run protoc",
+    "clean": "rm -rf generated",
+    "doc": "find src -name '*.js' | xargs jsdoc",
+    "protoc": "mkdir -p generated; protoc --js_out=import_style=commonjs,binary:generated -I.. ../blockfish.proto"
   },
-  "author": "iitalics",
-  "license": "ISC",
   "dependencies": {
     "google-protobuf": "^3.14.0"
   },
