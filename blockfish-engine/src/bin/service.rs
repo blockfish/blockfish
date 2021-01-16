@@ -63,8 +63,10 @@ fn entry() -> Error {
 
 /// Reader thread: deserializes requests from `rdr` into `tx`.
 fn reader(mut rdr: impl std::io::Read, tx: mpsc::SyncSender<protos::Request>) -> Result<()> {
+    let mut cis = protobuf::CodedInputStream::new(&mut rdr);
     loop {
-        let req = protos::Request::parse_from_reader(&mut rdr)?;
+        let mut req = protos::Request::default();
+        cis.merge_message(&mut req)?;
         if tx.send(req).is_err() {
             return Ok(());
         }
@@ -73,13 +75,14 @@ fn reader(mut rdr: impl std::io::Read, tx: mpsc::SyncSender<protos::Request>) ->
 
 /// Writer thread: serializes responses from `rx` into `wtr`.
 fn writer(mut wtr: impl std::io::Write, rx: mpsc::Receiver<protos::Response>) -> Result<()> {
+    let mut cos = protobuf::CodedOutputStream::new(&mut wtr);
     loop {
         let res = match rx.recv() {
             Ok(res) => res,
             Err(_) => return Ok(()),
         };
-        res.write_to_writer(&mut wtr)?;
-        wtr.flush()?;
+        res.write_length_delimited_to(&mut cos)?;
+        cos.flush()?;
     }
 }
 
