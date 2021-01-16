@@ -1,8 +1,9 @@
-use std::sync::mpsc;
-use thiserror::Error;
 use blockfish::protos;
-
-//////////////////////////////////////////////////////////////////////////////////////////
+use std::{
+    convert::{Infallible, TryFrom},
+    sync::mpsc,
+};
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 enum Error {
@@ -52,7 +53,10 @@ fn entry() -> Error {
         }
     });
     std::thread::spawn(move || {
-        let err = service(res_tx, req_rx).unwrap_or_else(|e| e);
+        let err = match service(res_tx, req_rx) {
+            Ok(impossible) => match impossible {},
+            Err(err) => err,
+        };
         let _ = err_tx3.send(err);
     });
     err_rx.recv().unwrap()
@@ -87,20 +91,157 @@ fn writer(mut wtr: impl std::io::Write, rx: mpsc::Receiver<protos::Response>) ->
 fn service(
     tx: mpsc::SyncSender<protos::Response>,
     rx: mpsc::Receiver<protos::Request>,
-) -> Result<Error> {
+) -> Result<Infallible> {
     log::debug!("started service thread");
-    loop {
-        // send a greeting
-        let mut res = protos::Response::new();
-        res.set_greeting(protos::Response_Greeting {
-            version: blockfish::version().to_string(),
-            motd: "Hello world".to_string(),
-            ..Default::default()
-        });
-        tx.send(res).map_err(|_| Error::EarlyExit)?;
 
-        // get a request
-        let req = rx.recv().map_err(|_| Error::EarlyExit)?;
-        log::info!("{:?}", req);
+    // send initial greeting
+    let mut res = protos::Response::new();
+    res.set_greeting(protos::Response_Greeting {
+        version: blockfish::version().to_string(),
+        motd: "Hello world".to_string(),
+        ..protos::Response_Greeting::new()
+    });
+    tx.send(res).map_err(|_| Error::EarlyExit)?;
+
+    // running ai instance
+    let mut ai = blockfish::ai::AI::new(blockfish::Config::default());
+
+    loop {
+        // recv & dispatch requests
+        let mut req = rx.recv().map_err(|_| Error::EarlyExit)?;
+        if req.has_set_config() {
+            set_config(&mut ai, req.take_set_config())?;
+        } else if req.has_set_ruleset() {
+            set_ruleset(&mut ai, req.take_set_ruleset())?;
+        } else if req.has_analyze() {
+            analyze(&mut ai, req.take_analyze(), tx.clone())?;
+        } else {
+            log::warn!("got an unknown request type");
+        }
+    }
+}
+
+/// Handles a "set_config" request.
+fn set_config(ai: &mut blockfish::ai::AI, msg: protos::Request_Config) -> Result<()> {
+    let cfg = ai.config_mut();
+    if msg.k_nodes != 0 {
+        cfg.search_limit = (msg.k_nodes as usize) * 1_000;
+    }
+    log::debug!("set config = {:?}", cfg);
+    Ok(())
+}
+
+/// Handles a "set_ruleset" request.
+fn set_ruleset(_: &mut blockfish::ai::AI, _: protos::Request_Ruleset) -> Result<()> {
+    log::warn!("`set_ruleset` is useless currently");
+    Ok(())
+}
+
+/// Handles a "analyze" request. A response is sent to `tx` when the analysis completes.
+fn analyze(
+    ai: &mut blockfish::ai::AI,
+    msg: protos::Request_Analyze,
+    tx: mpsc::SyncSender<protos::Response>,
+) -> Result<()> {
+    let id = msg.id;
+    let ss = from_snapshot_proto(msg.get_snapshot());
+    let count = max_if_zero(msg.max_results as usize);
+    let len = max_if_zero(msg.max_placements as usize);
+    let mut handle = ai.analyze(ss);
+    std::thread::spawn(move || {
+        handle.wait();
+        let mut res = protos::Response::new();
+        let mut finished = res.mut_finished();
+        finished.id = id;
+        to_analysis_proto(handle, count, len, &mut finished);
+        let _ = tx.send(res);
+    });
+    Ok(())
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+// Below is all helper functions for converting between `protos::*` types
+//////////////////////////////////////////////////////////////////////////////////////////
+
+fn max_if_zero(x: usize) -> usize {
+    if x == 0 {
+        std::usize::MAX
+    } else {
+        x
+    }
+}
+
+fn from_snapshot_proto(ss: &protos::Snapshot) -> blockfish::ai::Snapshot {
+    blockfish::ai::Snapshot {
+        hold: ss.hold.chars().next().and_then(color),
+        queue: ss.queue.chars().filter_map(color).collect(),
+        matrix: matrix(ss.rows.iter().map(|s| s.as_str())),
+    }
+}
+
+fn color(ch: char) -> Option<blockfish::Color> {
+    blockfish::Color::try_from(ch).ok()
+}
+
+fn matrix<'a>(row_strs: impl Iterator<Item = &'a str>) -> blockfish::BasicMatrix {
+    let mut mat = None;
+    for (i, row_str) in row_strs.enumerate() {
+        let mat = mat.get_or_insert_with(|| {
+            let cols = row_str.chars().count();
+            blockfish::BasicMatrix::with_cols(cols as u16)
+        });
+        for (j, ch) in row_str.chars().enumerate() {
+            if blockfish::Color::try_from(ch).is_ok() {
+                mat.set((i as u16, j as u16));
+            }
+        }
+    }
+    mat.unwrap_or_else(|| blockfish::BasicMatrix::with_cols(10))
+}
+
+fn to_analysis_proto(
+    analysis: blockfish::ai::Analysis,
+    count: usize,
+    len: usize,
+    out: &mut protos::Response_Analysis,
+) {
+    let mut move_ids = analysis.all_moves().collect::<Vec<_>>();
+    move_ids.sort_by(|&m, &n| analysis.cmp(m, n));
+    out.set_suggestions(
+        move_ids
+            .iter()
+            .take(count)
+            .map(|&m_id| to_suggestion_proto(&analysis.suggestion(m_id, len)))
+            .collect(),
+    );
+    if let Some(stats) = analysis.stats() {
+        out.set_stats(to_stats_proto(&stats));
+    }
+}
+
+fn to_suggestion_proto(sugg: &blockfish::ai::Suggestion) -> protos::Suggestion {
+    let mut proto = protos::Suggestion::new();
+    proto.rating = sugg.rating;
+    proto.inputs = sugg.inputs.iter().map(|&i| to_input_proto(i)).collect();
+    proto
+}
+
+fn to_stats_proto(stats: &blockfish::ai::Stats) -> protos::Stats {
+    let mut proto = protos::Stats::new();
+    proto.nodes = stats.nodes as u64;
+    proto.iters = stats.iterations as u64;
+    proto.time_ms = stats.time_taken.as_millis() as u64;
+    proto
+}
+
+fn to_input_proto(i: blockfish::Input) -> protos::Input {
+    match i {
+        blockfish::Input::Left => protos::Input::LEFT,
+        blockfish::Input::Right => protos::Input::RIGHT,
+        blockfish::Input::CW => protos::Input::CW,
+        blockfish::Input::CCW => protos::Input::CCW,
+        blockfish::Input::Hold => protos::Input::HOLD,
+        blockfish::Input::SD => protos::Input::SD,
+        blockfish::Input::HD => protos::Input::HD,
     }
 }
