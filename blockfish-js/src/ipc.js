@@ -9,6 +9,7 @@ class IPC extends EventEmitter {
         Object.assign(this, {
             subprocess,
             _len: null,
+            _killed: false,
         });
         subprocess.stdout.on('data', this._onRawData.bind(this));
         subprocess.on('exit', this._onProcessExit.bind(this));
@@ -16,6 +17,9 @@ class IPC extends EventEmitter {
     }
 
     _onRawData(buf) {
+        if (this._killed) {
+            return;
+        }
         let pos = 0;
         for (;;) {
             if (this._len === null) {
@@ -49,6 +53,9 @@ class IPC extends EventEmitter {
     }
 
     send(req, cb) {
+        if (this._killed) {
+            return;
+        }
         let i = 0;
         let writeCallback = () => {
             if (cb && ++i == 2) {
@@ -64,7 +71,11 @@ class IPC extends EventEmitter {
     }
 
     kill() {
+        if (this._killed) {
+            return;
+        }
         this.subprocess.kill('SIGTERM');
+        this._killed = true;
     }
 }
 
