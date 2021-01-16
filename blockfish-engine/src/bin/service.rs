@@ -1,8 +1,5 @@
 use std::sync::mpsc;
-
-use protobuf::Message as _;
 use thiserror::Error;
-
 use blockfish::protos;
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -65,8 +62,7 @@ fn entry() -> Error {
 fn reader(mut rdr: impl std::io::Read, tx: mpsc::SyncSender<protos::Request>) -> Result<()> {
     let mut cis = protobuf::CodedInputStream::new(&mut rdr);
     loop {
-        let mut req = protos::Request::default();
-        cis.merge_message(&mut req)?;
+        let req = cis.read_message()?;
         if tx.send(req).is_err() {
             return Ok(());
         }
@@ -75,14 +71,15 @@ fn reader(mut rdr: impl std::io::Read, tx: mpsc::SyncSender<protos::Request>) ->
 
 /// Writer thread: serializes responses from `rx` into `wtr`.
 fn writer(mut wtr: impl std::io::Write, rx: mpsc::Receiver<protos::Response>) -> Result<()> {
-    let mut cos = protobuf::CodedOutputStream::new(&mut wtr);
     loop {
         let res = match rx.recv() {
             Ok(res) => res,
             Err(_) => return Ok(()),
         };
-        res.write_length_delimited_to(&mut cos)?;
+        let mut cos = protobuf::CodedOutputStream::new(&mut wtr);
+        cos.write_message_no_tag(&res)?;
         cos.flush()?;
+        wtr.flush()?; // https://github.com/stepancheg/rust-protobuf/issues/541
     }
 }
 
@@ -91,6 +88,7 @@ fn service(
     tx: mpsc::SyncSender<protos::Response>,
     rx: mpsc::Receiver<protos::Request>,
 ) -> Result<Error> {
+    log::debug!("started service thread");
     loop {
         // send a greeting
         let mut res = protos::Response::new();
