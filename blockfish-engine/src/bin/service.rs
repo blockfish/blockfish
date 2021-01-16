@@ -226,8 +226,8 @@ fn to_suggestion_proto(sugg: &blockfish::ai::Suggestion) -> protos::Suggestion {
 fn to_stats_proto(stats: &blockfish::ai::Stats) -> protos::Stats {
     let mut proto = protos::Stats::new();
     proto.nodes = stats.nodes as u64;
-    proto.iters = stats.iterations as u64;
-    proto.time_ms = stats.time_taken.as_millis() as u64;
+    proto.iterations = stats.iterations as u64;
+    proto.time_taken_millis = stats.time_taken.as_millis() as u64;
     proto
 }
 

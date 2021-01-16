@@ -15,10 +15,13 @@ ai.on('init', motd => {
 
 let ss = {
     queue: "LOJI",
-    matrix: "XXXXX_XXXXX\nX_XXXXXXXX",
+    matrix: [
+        'XXXXX_XXXXX',
+        'X_XXXXXXXXX'
+    ],
 };
 let cfg = {
-    node_limit: 30000,
+    node_limit: 5000,
 };
 ai.analyze(ss, cfg, result => {
     console.log('result:');

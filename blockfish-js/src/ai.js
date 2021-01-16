@@ -99,10 +99,7 @@ function toSnapshotProto(arg) {
     let ss = new protos.Snapshot;
     ss.setHold(arg.hold || "");
     ss.setQueue(arg.queue);
-    let rows = typeof arg.matrix === 'string' ?
-        arg.matrix.split('\n') :
-        arg.matrix.slice(0);
-    ss.setRowsList(rows.reverse());
+    ss.setRowsList(arg.matrix);
     return ss;
 }
 
@@ -113,8 +110,8 @@ function fromAnalysisProto(arg) {
         suggestions: suggs.map(fromSuggestionProto),
         statistics: {
             nodes: stats.getNodes(),
-            iterations: stats.getIters(),
-            timeTaken: stats.getTimeMs() / 1000,
+            iterations: stats.getIterations(),
+            timeTaken: stats.getTimeTakenMillis() / 1000,
         },
     };
 }

@@ -25,8 +25,8 @@ message Suggestion {
 
 message Stats {
   uint64 nodes = 1;
-  uint64 iters = 2;
-  uint64 time_ms = 3;
+  uint64 iterations = 2;
+  uint64 time_taken_millis = 3;
 }
 
 message Request {
