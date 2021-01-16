@@ -79,6 +79,10 @@ impl AI {
         self.config.clone()
     }
 
+    pub fn config_mut(&mut self) -> &mut Config {
+        &mut self.config
+    }
+
     /// Begins a new analysis of `snapshot`, returning a handle to it.
     pub fn analyze(&mut self, snapshot: Snapshot) -> Analysis {
         analysis::spawn(
