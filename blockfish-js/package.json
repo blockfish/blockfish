@@ -4,7 +4,7 @@
   "description": "Blockfish Node JS interface",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "protoc": "mkdir -p generated; protoc --js_out=import_style=commonjs,binary:generated -I.. ../blockfish.proto"
   },
   "author": "iitalics",
   "license": "ISC",
