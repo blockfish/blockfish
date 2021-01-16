@@ -1,0 +1,14 @@
+{
+  "name": "blockfish-js",
+  "version": "0.1.0",
+  "description": "Blockfish Node JS interface",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "iitalics",
+  "license": "ISC",
+  "dependencies": {
+    "google-protobuf": "^3.14.0"
+  }
+}
