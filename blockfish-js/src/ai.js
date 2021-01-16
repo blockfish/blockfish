@@ -2,11 +2,18 @@ const EventEmitter = require('events');
 const protos = require('../generated/blockfish_pb.js');
 const IPC = require('./ipc.js');
 
+/**
+ * Class representing a handle to a Blockfish AI process.
+ */
 class AI extends EventEmitter {
-    constructor(ipc) {
+    /**
+     * Construct a new AI.
+     * @param {string} [blockfish] - Blockfish executable path to spawn for IPC.
+     */
+    constructor(blockfish) {
         super();
         Object.assign(this, {
-            ipc: makeIPC(ipc),
+            ipc: makeIPC(blockfish),
             version: null,
             _init: false,
             _id: 0,
@@ -16,10 +23,22 @@ class AI extends EventEmitter {
         this.ipc.on('error', e => this.emit('error', e));
     }
 
-    kill() {
-        this.ipc.kill();
-    }
+    /**
+     * Kills the process, preventing any further suggestions or analysis.
+     */
+    kill() { this.ipc.kill(); }
 
+    /**
+     * Starts an analysis. When the analysis finishes, the callback is called
+     * with the result of the analysis.
+     * @param {Object} snapshot - Snapshot to analyze.
+     * @param {string} [snapshot.hold] - Piece in hold.
+     * @param {string} snapshot.queue - Upcoming pieces in the queue.
+     * @param {string[]} snapshot.matrix - Matrix rows, in order from bottom line to top.
+     * @param {Object} [config] - Configuration options.
+     * @param {number} [config.node_limit] - Max number of nodes to discover before cutting off search.
+     * @param {AI~analyzeCallback} callback - Called when the analysis completes.
+     */
     analyze(snapshot, config, callback) {
         if (config instanceof Function) {
             callback = config;
@@ -27,6 +46,15 @@ class AI extends EventEmitter {
         }
         this._analyze(snapshot, config, callback);
     }
+
+    /**
+     * Callback when an analysis completes.
+     *
+     * @callback AI~analyzeCallback
+     * @param {Object} analysis - Describes the analysis results.
+     * @param {AI~Suggestion[]} analysis.suggestions - Suggested sequences, in order from best to worst.
+     * @param {AI~Statistics} analysis.statistics - Statistics about the analysis.
+     */
 
     _analyze(snapshot, config, callback) {
         if (!this._init) {
@@ -76,7 +104,25 @@ class AI extends EventEmitter {
     }
 }
 
+/**
+ * Default name of the blockfish executable.
+ * @constant
+ * @type {string}
+ */
 AI.DEFAULT_BLOCKFISH_PATH = 'blockfish';
+
+/**
+ * Initialization event, fired once after the {@link AI} is created.
+ *
+ * @event AI#init
+ */
+
+/**
+ * Fired if an error occurs with the blockfish process.
+ *
+ * @event AI#error
+ * @type {Error}
+ */
 
 function makeIPC(arg) {
     if (arg === undefined) {
@@ -104,22 +150,40 @@ function toSnapshotProto(arg) {
 }
 
 function fromAnalysisProto(arg) {
-    let stats = arg.getStats();
-    let suggs = arg.getSuggestionsList();
     return {
-        suggestions: suggs.map(fromSuggestionProto),
-        statistics: {
-            nodes: stats.getNodes(),
-            iterations: stats.getIterations(),
-            timeTaken: stats.getTimeTakenMillis() / 1000,
-        },
+        suggestions: arg.getSuggestionsList().map(fromSuggestionProto),
+        statistics: fromStatsProto(arg.getStats()),
+    };
+}
+
+function fromStatsProto(arg) {
+    /**
+     * Statistics on an analysis.
+     *
+     * @typedef {Object} AI~Statistics
+     * @property {number} nodes - Total number of nodes discovered.
+     * @property {number} iterations - Number of iterations (leaf nodes).
+     * @property {number} timeTaken - Time taken, in seconds.
+     */
+    return {
+        nodes: arg.getNodes(),
+        iterations: arg.getIterations(),
+        timeTaken: arg.getTimeTakenMillis() / 1000,
     };
 }
 
 function fromSuggestionProto(arg) {
+    /**
+     * A suggestion from an analysis.
+     *
+     * @typedef {Object} AI~Suggestion
+     * @property {number} rating - Suggestion's rating. Lower is better.
+     * @property {string[]} inputs - List of inputs to press. Each string is one of
+     * 'left', 'right', 'cw', 'ccw', 'hold', 'sd', or 'hd'.
+     */
     return {
         rating: arg.getRating(),
-        inputs: arg.getInputsList().map(fromInputProto).join(' '),
+        inputs: arg.getInputsList().map(fromInputProto),
     };
 }
 

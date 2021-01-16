@@ -4,11 +4,16 @@
   "description": "Blockfish Node JS interface",
   "main": "index.js",
   "scripts": {
-    "protoc": "mkdir -p generated; protoc --js_out=import_style=commonjs,binary:generated -I.. ../blockfish.proto"
+      "protoc": "mkdir -p generated; protoc --js_out=import_style=commonjs,binary:generated -I.. ../blockfish.proto",
+      "doc": "find src -name '*.js' | xargs
+jsdoc"
   },
   "author": "iitalics",
   "license": "ISC",
   "dependencies": {
     "google-protobuf": "^3.14.0"
+  },
+  "devDependencies": {
+    "jsdoc": "^3.6.6"
   }
 }
