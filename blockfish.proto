@@ -20,7 +20,7 @@ message Snapshot {
 
 message Suggestion {
   sint64 rating = 1;
-  repeated Input inputs = 2;
+  repeated Input inputs = 2 [packed=true];
 }
 
 message Stats {
