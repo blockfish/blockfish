@@ -34,16 +34,18 @@ class AI extends EventEmitter {
             return;
         }
 
+        let id = ++this._id;
+        let analyzeCallback = () => {
+            this._analysisCallbacks[id] = callback;
+        };
+
         let setConfigCallback = () => {
             let ana = new protos.Request.Analyze;
-            let id = this._id++;
             ana.setId(id);
             ana.setSnapshot(toSnapshotProto(snapshot));
             let analyzeReq = new protos.Request;
             analyzeReq.setAnalyze(ana);
-            this.ipc.send(analyzeReq, () => {
-                this._analysisCallbacks[id] = callback;
-            });
+            this.ipc.send(analyzeReq, analyzeCallback);
         };
 
         if (config === null) {
@@ -67,8 +69,9 @@ class AI extends EventEmitter {
         } else if (res.hasFinished()) {
             let analysis = res.getFinished();
             let id = analysis.getId();
-            this._analysisCallbacks[id](fromAnalysisProto(analysis));
+            let cb = this._analysisCallbacks[id];
             this._analysisCallbacks[id] = null;
+            cb(fromAnalysisProto(analysis));
         }
     }
 }

@@ -15,7 +15,7 @@ ai.on('init', motd => {
 
 let ss = {
     queue: "LOJI",
-    matrix: "XXXXX XXXXX\nX XXXXXXXX",
+    matrix: "XXXXX_XXXXX\nX_XXXXXXXX",
 };
 ai.analyze(ss, result => {
     console.log('result:');
