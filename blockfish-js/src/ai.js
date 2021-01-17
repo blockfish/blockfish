@@ -35,16 +35,17 @@ class AI extends EventEmitter {
      * @param {string} [snapshot.hold] - Piece in hold.
      * @param {string} snapshot.queue - Upcoming pieces in the queue.
      * @param {string[]} snapshot.matrix - Matrix rows, in order from bottom line to top.
-     * @param {Object} [config] - Configuration options.
-     * @param {number} [config.node_limit] - Max number of nodes to discover before cutting off search.
+     * @param {Object} [options] - Analysis options.
+     * @param {number} [options.nodeLimit] - Max number of nodes to discover before cutting off search.
+     * @param {number} [options.suggestionLimit] - Max number of suggestions to return.
      * @param {AI~analyzeCallback} callback - Called when the analysis completes.
      */
-    analyze(snapshot, config, callback) {
-        if (config instanceof Function) {
-            callback = config;
-            config = null;
+    analyze(snapshot, options, callback) {
+        if (options instanceof Function) {
+            callback = options;
+            options = {};
         }
-        this._analyze(snapshot, config, callback);
+        this._analyze(snapshot, options, callback);
     }
 
     /**
@@ -56,9 +57,9 @@ class AI extends EventEmitter {
      * @param {AI~Statistics} analysis.statistics - Statistics about the analysis.
      */
 
-    _analyze(snapshot, config, callback) {
+    _analyze(snapshot, options, callback) {
         if (!this._init) {
-            this.on('init', () => this._analyze(snapshot, config, callback));
+            this.on('init', () => this._analyze(snapshot, options, callback));
             return;
         }
 
@@ -71,16 +72,17 @@ class AI extends EventEmitter {
             let ana = new protos.Request.Analyze;
             ana.setId(id);
             ana.setSnapshot(toSnapshotProto(snapshot));
+            setAnalyzeProto(ana, options);
             let analyzeReq = new protos.Request;
             analyzeReq.setAnalyze(ana);
             this.ipc.send(analyzeReq, analyzeCallback);
         };
 
-        if (config === null) {
+        if (options === null) {
             setConfigCallback();
         } else {
             let setConfigReq = new protos.Request;
-            setConfigReq.setSetConfig(toConfigProto(config));
+            setConfigReq.setSetConfig(toConfigProto(options));
             this.ipc.send(setConfigReq, setConfigCallback);
         }
     }
@@ -135,9 +137,17 @@ function makeIPC(arg) {
     }
 }
 
-function toConfigProto(arg) {
+function setAnalyzeProto(proto, options) {
+    if (options.suggestionLimit !== undefined) {
+        proto.setMaxResults(options.suggestionLimit);
+    }
+}
+
+function toConfigProto(options) {
     let cfg = new protos.Request.Config;
-    cfg.setNodeLimit(arg.node_limit || 0);
+    if (options.nodeLimit !== undefined) {
+        cfg.setNodeLimit(options.nodeLimit);
+    }
     return cfg;
 }
 
