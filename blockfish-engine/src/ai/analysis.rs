@@ -49,7 +49,7 @@ struct AnalysisSink {
 impl Analysis {
     /// Constructs a `(sink, handle)` pair. The analysis handle will use `trace_inputs` as
     /// the algorithm for computing inputs from a trace.
-    fn new(trace_inputs: impl Fn(&[usize]) -> Vec<Input> + 'static) -> (AnalysisSink, Self) {
+    fn new(trace_inputs: impl Fn(&[usize]) -> Vec<Input> + Send + 'static) -> (AnalysisSink, Self) {
         let (tx, rx) = mpsc::sync_channel(256);
         let stats = Arc::new(RwLock::new(None));
         (
@@ -234,7 +234,7 @@ fn analysis(shtb: Arc<ShapeTable>, cfg: Config, root: State, sink: AnalysisSink)
 
 // Computing inputs
 
-type TraceInputsFn = dyn Fn(&[usize]) -> Vec<Input>;
+type TraceInputsFn = dyn Fn(&[usize]) -> Vec<Input> + Send;
 
 fn reconstruct_inputs(shtb: &ShapeTable, state0: State, trace: &[usize]) -> Vec<Input> {
     let mut pfind = PlaceFinder::new(&shtb);
@@ -434,5 +434,12 @@ mod test {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn test_analysis_is_send() {
+        let (_, handle) = Analysis::new(spam_hd_traces);
+        // only needs to typecheck
+        std::thread::spawn(move || handle);
     }
 }

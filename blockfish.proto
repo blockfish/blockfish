@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package blockfish;
+
+enum Input {
+  LEFT = 0;
+  RIGHT = 1;
+  CW = 2;
+  CCW = 3;
+  HOLD = 4;
+  SD = 5;
+  HD = 6;
+}
+
+message Snapshot {
+  string hold = 1;
+  string queue = 2;
+  repeated string rows = 3;
+}
+
+message Suggestion {
+  sint64 rating = 1;
+  repeated Input inputs = 2 [packed=true];
+}
+
+message Stats {
+  uint64 nodes = 1;
+  uint64 iterations = 2;
+  uint64 time_taken_millis = 3;
+}
+
+message Request {
+
+  message Config {
+    uint32 node_limit = 1;
+  }
+
+  message Ruleset {
+    message SRS {}
+    oneof ruleset {
+      SRS srs = 1;
+    }
+  }
+
+  message Analyze {
+    int64 id = 1;
+    Snapshot snapshot = 2;
+    uint32 max_results = 3;
+    uint32 max_placements = 4;
+  }
+
+  oneof req {
+    Config set_config = 1;
+    Ruleset set_ruleset = 2;
+    Analyze analyze = 3;
+  }
+}
+
+message Response {
+
+  message Greeting {
+    string version = 1;
+    string motd = 2;
+  }
+
+  message Analysis {
+    int64 id = 1;
+    Stats stats = 2;
+    repeated Suggestion suggestions = 3;
+  }
+
+  oneof res {
+    Greeting greeting = 1;
+    Analysis finished = 2;
+  }
+}

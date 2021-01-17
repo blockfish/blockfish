@@ -1,4 +1,4 @@
-use super::state::State;
+use super::{state::State, eval::{eval, penalty}};
 use crate::{
     config::Parameters,
     place::{Place, PlaceFinder},
@@ -118,7 +118,8 @@ impl<'s> Search<'s> {
         }
         self.lvl_idx = 0;
         root_state.placements(&mut self.pfind);
-        self.node = Some(Node::root(root_state));
+
+        self.node = Some(Node::root(&self.params, root_state));
         self.node_count = 1;
     }
 
@@ -234,12 +235,13 @@ struct Node {
 }
 
 impl Node {
-    fn root(state: State) -> Self {
+    fn root(params: &Parameters, state: State) -> Self {
+        let h = eval(state.matrix()).score(params);
         Self {
             state,
             trace: vec![],
-            f: std::i64::MAX,
-            parent_f: std::i64::MAX,
+            f: h,
+            parent_f: h,
         }
     }
 
@@ -250,8 +252,8 @@ impl Node {
         state.place(pl);
         let mut trace = self.trace.clone();
         trace.push(pl.idx as u8);
-        let g = super::eval::penalty(params, trace.len());
-        let h = super::eval::eval(state.matrix()).score(params);
+        let g = penalty(params, trace.len());
+        let h = eval(state.matrix()).score(params);
         Self {
             state,
             trace,
