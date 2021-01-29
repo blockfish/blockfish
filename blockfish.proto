@@ -33,6 +33,8 @@ message Request {
 
   message Config {
     uint32 node_limit = 1;
+    uint32 max_results = 3;
+    uint32 max_placements = 4;
   }
 
   message Ruleset {
@@ -45,8 +47,6 @@ message Request {
   message Analyze {
     int64 id = 1;
     Snapshot snapshot = 2;
-    uint32 max_results = 3;
-    uint32 max_placements = 4;
   }
 
   oneof req {

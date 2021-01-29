@@ -1,4 +1,7 @@
-use super::{state::State, eval::{eval, penalty}};
+use super::{
+    eval::{eval, penalty},
+    state::State,
+};
 use crate::{
     config::Parameters,
     place::{Place, PlaceFinder},

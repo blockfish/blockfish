@@ -72,7 +72,6 @@ class AI extends EventEmitter {
             let ana = new protos.Request.Analyze;
             ana.setId(id);
             ana.setSnapshot(toSnapshotProto(snapshot));
-            setAnalyzeProto(ana, options);
             let analyzeReq = new protos.Request;
             analyzeReq.setAnalyze(ana);
             this.ipc.send(analyzeReq, analyzeCallback);
@@ -137,18 +136,15 @@ function makeIPC(arg) {
     }
 }
 
-function setAnalyzeProto(proto, options) {
+function toConfigProto(options) {
+    let proto = new protos.Request.Config;
+    if (options.nodeLimit !== undefined) {
+        proto.setNodeLimit(options.nodeLimit);
+    }
     if (options.suggestionLimit !== undefined) {
         proto.setMaxResults(options.suggestionLimit);
     }
-}
-
-function toConfigProto(options) {
-    let cfg = new protos.Request.Config;
-    if (options.nodeLimit !== undefined) {
-        cfg.setNodeLimit(options.nodeLimit);
-    }
-    return cfg;
+    return proto;
 }
 
 function toSnapshotProto(arg) {

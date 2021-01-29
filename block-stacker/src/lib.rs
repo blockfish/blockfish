@@ -1,6 +1,9 @@
 mod ruleset;
 mod stacker;
 
+#[allow(unused)]
+mod random;
+
 /// One of `"ILJSZTO"`
 pub type PieceType = char;
 /// One of `"ILJSZTOGH "`
