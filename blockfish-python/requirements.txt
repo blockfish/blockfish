@@ -1,0 +1,2 @@
+# -*- coding: utf-8 -*-
+protobuf>=3.14.0

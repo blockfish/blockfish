@@ -7,3 +7,5 @@
 traces
 fishtest/*.db
 config/
+**/*.pyc
+**/*.egg-info
