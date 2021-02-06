@@ -24,9 +24,9 @@ class AI extends EventEmitter {
     }
 
     /**
-     * Kills the process, preventing any further suggestions or analysis.
+     * Shuts down the process, preventing any further suggestions or analysis.
      */
-    kill() { this.ipc.kill(); }
+    shutdown() { this.ipc.kill(); }
 
     /**
      * Starts an analysis. When the analysis finishes, the callback is called

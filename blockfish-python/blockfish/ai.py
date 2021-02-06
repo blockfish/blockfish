@@ -8,20 +8,20 @@ import blockfish.blockfish_pb2 as protos
 INPUT_NAMES = ('left', 'right', 'cw', 'ccw', 'hold', 'sd', 'hd')
 
 Snapshot = namedtuple('Snapshot', [
-        'queue',
-        'hold',
-        'matrix',
+    'queue',
+    'hold',
+    'matrix',
 ])
 
 Statistics = namedtuple('Statistics', [
-        'nodes',
-        'iterations',
-        'time_taken',
+    'nodes',
+    'iterations',
+    'time_taken',
 ])
 
 Suggestion = namedtuple('Suggestion', [
-        'rating',
-        'inputs',
+    'rating',
+    'inputs',
 ])
 
 
@@ -53,12 +53,11 @@ class AI:
         id = self._next_id
         self._next_id += 1
         self._analysis[id] = asyncio.Queue(maxsize = 1)
-        # build and send request
-        if len(cfg) > 0:
-            req = to_set_config_proto(cfg)
-            await ipc.send(req)
-        req = to_analyze_proto(id, snapshot)
-        await ipc.send(req)
+        # build and send request(s)
+        await ipc.send(
+            to_set_config_proto(cfg),
+            to_analyze_proto(id, snapshot)
+        )
         # wait for callback
         fin = await self._analysis[id].get()
         del self._analysis[id]

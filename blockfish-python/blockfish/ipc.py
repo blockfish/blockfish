@@ -12,8 +12,9 @@ class IPC:
     def __init__(self, process):
         self._sp = process
 
-    async def send(self, req):
-        write_request(self._sp.stdin, req)
+    async def send(self, *reqs):
+        for req in reqs:
+            write_request(self._sp.stdin, req)
 
     async def recv(self):
         return await read_response(self._sp.stdout)

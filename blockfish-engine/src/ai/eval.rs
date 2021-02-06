@@ -453,7 +453,7 @@ mod test {
     }
 
     #[test]
-    fn test_covered_hole_3() {
+    fn test_covered_holes() {
         let (xx, rr, __) = (true, true, false);
         assert_eq!(
             covered_hole(
@@ -467,31 +467,33 @@ mod test {
             Some((1, 2..3)),
             "double"
         );
-        // assert_eq!(
-        //     covered_hole(
-        //         &basic_matrix![
-        //             [xx, xx, xx, xx, xx, xx],
-        //             [xx, __, xx, __, xx, xx],
-        //             [xx, rr, xx, rr, xx, xx],
-        //             [__, __, __, rr, __, __],
-        //         ],
-        //         &mut Default::default()
-        //     ),
-        //     Some((1, 2..4)),
-        //     "double, right has greater residue"
-        // );
-        // assert_eq!(
-        //     covered_hole(
-        //         &basic_matrix![
-        //             [xx, xx, xx, __, xx, xx],
-        //             [xx, __, xx, __, xx, xx],
-        //             [xx, rr, xx, rr, xx, xx],
-        //         ],
-        //         &mut Default::default()
-        //     ),
-        //     Some((0, 2..3)),
-        //     "double, right has deeper residue"
-        // );
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![
+                    [xx, xx, xx, xx, xx, xx],
+                    [xx, __, xx, __, xx, xx],
+                    [xx, rr, xx, rr, xx, xx],
+                    [__, __, __, rr, __, __],
+                ],
+                &mut Default::default()
+            ),
+            Some((1, 2..3)),
+            //Some((1, 2..4)),  <- would this be better?
+            "double, right has greater residue"
+        );
+        assert_eq!(
+            covered_hole(
+                &basic_matrix![
+                    [xx, xx, xx, __, xx, xx],
+                    [xx, __, xx, __, xx, xx],
+                    [xx, rr, xx, rr, xx, xx],
+                ],
+                &mut Default::default()
+            ),
+            Some((1, 2..3)),
+            // Some((0, 2..3)),  <- would this be better?
+            "double, right has deeper residue"
+        );
     }
 
     #[test]

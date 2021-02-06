@@ -588,9 +588,9 @@ mod test {
             garbage: GarbageConfig::default(),
         };
         let st1 = Stacker::new(Ruleset::guideline().into(), cfg.clone());
-        assert_eq!(st1.next(), &['L', 'S', 'I', 'O', 'J']);
+        assert_eq!(st1.next(), &['S', 'I', 'O', 'L', 'T']);
         let st2 = Stacker::new(Ruleset::guideline().into(), cfg.clone());
-        assert_eq!(st2.next(), &['L', 'S', 'I', 'O', 'J']);
+        assert_eq!(st2.next(), &['S', 'I', 'O', 'L', 'T']);
         assert_eq!(
             st1.matrix().collect::<Vec<_>>(),
             st2.matrix().collect::<Vec<_>>()

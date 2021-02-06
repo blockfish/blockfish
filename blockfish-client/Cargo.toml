@@ -8,7 +8,7 @@ edition = "2018"
 default = []
 
 [dependencies]
-sdl2 = { version = "0.34", features = ["ttf"] }
+sdl2 = { version = "0.35", features = ["ttf"] }
 thiserror = "1.0"
 log = "0.4.8"
 pretty_env_logger = "0.4"
