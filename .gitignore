@@ -9,3 +9,4 @@ fishtest/*.db
 config/
 **/*.pyc
 **/*.egg-info
+dist/
