@@ -7,8 +7,8 @@ tool for evaluating placements during a cheese race, spotting mistakes, and help
 user get better at recognizing more efficient ways of utilizing every piece.
 
 Currently, Blockfish tends to outperform even highly skilled players, and has already
-[beaten](https://www.youtube.com/watch?v=jfOyigfLPCU) the [world
-record](https://jstris.jezevec10.com/replay/9274538) for least-pieces 100L cheese
+[beaten](https://jstris.jezevec10.com/replay/53445238) the [world
+record](https://jstris.jezevec10.com/replay/54532835) for least-pieces 100L cheese
 race. However, there are still improvements to be made to the underlying algorithms. We
 hope to see Blockfish reaching before-unheard piece counts as low as 160 or 150.
 
