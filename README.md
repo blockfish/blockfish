@@ -38,6 +38,13 @@ Blockfish is written primarily in Rust. You can build it with the `cargo` tool.
 * Requires: `rust` version 1.48
 * Requires SDL2 and SDL2_ttf dev libraries.
 
+  On MacOS, the dev libraries can be installed with [homebrew](https://brew.sh/).
+  Once homebrew has been installed, the following commands are used to installed the libraries
+  ```sh
+  brew install sdl2
+  brew install sld2_ttf
+  ```
+
 The following command should be used to build the client:
 
 ```sh
