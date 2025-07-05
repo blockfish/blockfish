@@ -4,6 +4,7 @@
         "right": "right",
         "ccw": "z",
         "cw": "x",
+        "r180": "a",
         "hold": "shift",
         "sd": "down",
         "hd": "space",
