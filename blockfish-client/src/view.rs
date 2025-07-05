@@ -240,6 +240,7 @@ impl<'r> View<'r> {
         lc: usize,
         cc: usize,
         ds: usize,
+        undo_hints: usize,
         ds_goal: Option<usize>,
     ) {
         let mut pace = None;
@@ -267,6 +268,7 @@ impl<'r> View<'r> {
         self.stats[0].set(&format!("pieces:        {}", pc));
         self.stats[1].set(&format!("lines:         {}", lc));
         self.stats[2].set(&format!("color clears:  {}", cc));
+        self.stats[2].set(&format!("undo_hints:    {}", undo_hints));
         self.stats[3].set(&format!("dpp:           {}", maybe_f32(dpp, "?")));
         self.stats[4].set(&format!("100L pace:     {}", maybe(pace, "\u{221e}")));
         self.progress.0.set(&progress_label);

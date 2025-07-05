@@ -42,6 +42,7 @@ impl GameOp {
 #[allow(dead_code)]
 pub enum EngineOp {
     Toggle,
+    ToggleVisibility,
     Next,
     Prev,
     StepForward,
@@ -225,6 +226,7 @@ struct GameControlsSpec {
 #[derive(Deserialize)]
 struct EngineControlsSpec {
     toggle: KeyStroke,
+    toggle_visibility: KeyStroke,
     next: KeyStroke,
     prev: KeyStroke,
     forward: KeyStroke,
@@ -245,6 +247,10 @@ impl ControlsSpec {
             (Action::Game(GameOp::Reset), self.game.reset),
             (Action::Game(GameOp::Undo), self.game.undo),
             (Action::Engine(EngineOp::Toggle), self.engine.toggle),
+            (
+                Action::Engine(EngineOp::ToggleVisibility),
+                self.engine.toggle_visibility,
+            ),
             (Action::Engine(EngineOp::Next), self.engine.next),
             (Action::Engine(EngineOp::Prev), self.engine.prev),
             (Action::Engine(EngineOp::StepForward), self.engine.forward),

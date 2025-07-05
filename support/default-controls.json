@@ -12,6 +12,7 @@
     },
     "engine": {
         "toggle": "C-e",
+        "toggle_visibility": "g",
         "next": "tab",
         "prev": "C-tab",
         "forward": "C-f",

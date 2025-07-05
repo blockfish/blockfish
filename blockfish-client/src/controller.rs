@@ -17,8 +17,10 @@ pub struct Controller<'v> {
     view: View<'v>,
     stacker: Stacker,
     progress: Progress,
-    undo_list: Vec<(Stacker, Progress)>,
+    undo_list: Vec<(Stacker, Progress, Option<Analysis>)>,
     analysis: Option<Analysis>,
+    prior_best_move: Option<Analysis>,
+    engine_visible: bool,
     trie: Option<Trie>,
 }
 
@@ -47,6 +49,8 @@ impl<'v> Controller<'v> {
             undo_list: Vec::with_capacity(100),
             progress: Progress::new(),
             analysis: None,
+            prior_best_move: None,
+            engine_visible: true,
         };
 
         ctl.consult_engine();
@@ -76,12 +80,19 @@ impl<'v> Controller<'v> {
                 self.progress.lines,
                 self.progress.color_clears,
                 self.progress.downstack,
+                self.progress.undo_hints,
                 self.stacker.config().garbage.total_lines,
             );
         }
         if upd.contains(Update::AI) {
-            if let Some(an) = self.analysis.as_mut() {
+            if let Some(an) = self.prior_best_move.as_mut() {
                 an.update_view(&mut self.view)
+            } else if let Some(an) = self.analysis.as_mut() {
+                if self.engine_visible {
+                    an.update_view(&mut self.view)
+                } else {
+                    self.view.set_engine_disabled();
+                }
             } else {
                 self.view.set_engine_disabled();
             }
@@ -117,7 +128,13 @@ impl<'v> Controller<'v> {
     pub fn poll_engine(&mut self) {
         let mut upd = Update::empty();
         if let Some(an) = self.analysis.as_mut() {
-            upd.set(Update::AI, an.poll());
+            upd.set(
+                Update::AI,
+                matches!(
+                    an.poll(),
+                    AnalysisStatus::Finished | AnalysisStatus::MovesUpdated
+                ),
+            );
             if let Some(trie) = self.trie.as_mut() {
                 upd.set(Update::TRIE, trie.poll());
             }
@@ -129,14 +146,20 @@ impl<'v> Controller<'v> {
     fn undo_save(&mut self) {
         let stacker = self.stacker.clone();
         let progress = self.progress.clone();
-        self.undo_list.push((stacker, progress));
+        let prior_best_move = self.prior_best_move.as_ref().map(Analysis::clone_as_best);
+        self.undo_list.push((stacker, progress, prior_best_move));
     }
 
     /// Restore the current state from the undo list.
     fn undo_restore(&mut self) {
-        let (stacker, progress) = self.undo_list.pop().expect("undo list cannot be empty!");
+        let (stacker, progress, prior_best_move) =
+            self.undo_list.pop().expect("undo list cannot be empty!");
         self.stacker = stacker;
         self.progress = progress;
+        if self.prior_best_move.is_some() {
+            self.progress.undo_hints += 1;
+        }
+        self.prior_best_move = prior_best_move;
     }
 
     /// Hard drops the current piece and updates `progress` as a result.
@@ -175,8 +198,25 @@ impl<'v> Controller<'v> {
             }
             GameOp::HardDrop => {
                 self.undo_save();
+                self.prior_best_move = None;
                 self.hard_drop();
                 upd.set(Update::STACKER, true);
+                if !self.engine_visible {
+                    loop {
+                        let Some(an) = self.analysis.as_mut() else {
+                            break;
+                        };
+                        if let AnalysisStatus::Finished = an.poll() {
+                            break;
+                        }
+                    }
+                    if let Some(an) = self.analysis.take() {
+                        let prior_best_move = an.clone_as_best();
+                        self.prior_best_move =
+                            Self::evaluate_selected_move(&self.stacker, prior_best_move);
+                        self.analysis = Some(an);
+                    }
+                }
             }
             GameOp::Reset => {
                 let ruleset = self.stacker.ruleset().clone();
@@ -185,6 +225,7 @@ impl<'v> Controller<'v> {
                 self.stacker = Stacker::new(ruleset, cfg);
                 self.progress = Progress::new();
                 self.undo_list.clear();
+                self.prior_best_move = None;
                 self.undo_save();
                 upd.set(Update::STACKER, true);
             }
@@ -204,6 +245,55 @@ impl<'v> Controller<'v> {
         }
 
         self.update_view(upd);
+    }
+
+    /// compares the selected move against the suggestions
+    fn evaluate_selected_move(
+        stacker: &Stacker,
+        mut prior_best_move: Analysis,
+    ) -> Option<Analysis> {
+        // get the best move from the analysis
+        let best_rating = prior_best_move.moves.first().unwrap().rating;
+        let actual_board = stacker.snapshot().unwrap();
+
+        for _ in 0..prior_best_move.moves.len() {
+            let mv = &prior_best_move.moves[prior_best_move.sel_idx];
+            let mut next_suggestion = stacker.clone();
+
+            const SUGGESTION_THRESHOLD: i64 = 50;
+            if prior_best_move.go_to(&mut next_suggestion) {
+                next_suggestion.hard_drop();
+                let next_suggestion = next_suggestion.snapshot()?;
+
+                if next_suggestion == actual_board {
+                    let actual_score = mv.rating;
+
+                    // print the difference in rating
+                    if actual_score == best_rating {
+                        log::info!("good move");
+                        return None;
+                    } else if actual_score - best_rating > SUGGESTION_THRESHOLD {
+                        log::info!("actual_score - best_rating: {}", actual_score - best_rating);
+                        prior_best_move.sel_idx = 0;
+                        for m in &mut prior_best_move.moves {
+                            m.rating -= actual_score;
+                        }
+                        prior_best_move.nav(0, 0);
+                        return Some(prior_best_move);
+                    } else {
+                        log::info!("good enough");
+                        return None;
+                    }
+                } else {
+                    prior_best_move.nav(1, 0);
+                }
+            }
+        }
+
+        // oof, not even on the list of suggestions
+        log::info!("oof");
+        prior_best_move.nav(0, 0);
+        return Some(prior_best_move);
     }
 
     /// Handles an engine related user action.
@@ -230,9 +320,17 @@ impl<'v> Controller<'v> {
                 upd.set(Update::ENGINE, true);
                 self.disable_engine();
             }
+            EngineOp::ToggleVisibility => {
+                upd.set(Update::ENGINE, true);
+                self.engine_visible = !self.engine_visible;
+                self.analysis = Some(an);
+            }
             EngineOp::Next | EngineOp::Prev => {
                 let delta = if op == EngineOp::Prev { -1 } else { 1 };
                 upd.set(Update::AI, an.nav(delta, 0));
+                if let Some(an) = &mut self.prior_best_move {
+                    upd.set(Update::AI, an.nav(delta, 0));
+                }
                 self.analysis = Some(an);
             }
             EngineOp::StepForward | EngineOp::StepBackward => {
@@ -314,6 +412,7 @@ struct Progress {
     lines: usize,
     downstack: usize,
     color_clears: usize,
+    undo_hints: usize,
 }
 
 impl Progress {
@@ -325,6 +424,7 @@ impl Progress {
             lines: 0,
             downstack: 0,
             color_clears: 0,
+            undo_hints: 0,
         }
     }
 
@@ -361,11 +461,35 @@ struct Analysis {
     sel_pos: usize,
 }
 
+impl Analysis {
+    fn clone_as_best(&self) -> Self {
+        let mut an = Self {
+            analysis: None,
+            status: self.status.clone(),
+            src: self.src.clone(),
+            preview: self.preview.clone(),
+            moves: self.moves.clone(),
+            sel_idx: 0,
+            sel_pos: 0,
+        };
+        assert!(an.nav(0, 0));
+        an
+    }
+}
+
 /// A move suggested by the analysis.
+#[derive(Clone)]
 struct Move {
     id: ai::MoveId,
     rating: i64,
     inputs: Vec<blockfish::Input>,
+}
+
+#[derive(Debug)]
+enum AnalysisStatus {
+    MovesUpdated,
+    NoChange,
+    Finished,
 }
 
 impl Analysis {
@@ -390,10 +514,10 @@ impl Analysis {
 
     /// Polls the background analysis for updates. Returns `true` if anything changed as a
     /// result of new analysis results.
-    fn poll(&mut self) -> bool {
+    fn poll(&mut self) -> AnalysisStatus {
         let mut an = match self.analysis.take() {
             Some(an) => an,
-            None => return false,
+            None => return AnalysisStatus::Finished,
         };
         let mut updated = false;
         for _ in 0..MAX_POLLS_PER_FRAME {
@@ -415,12 +539,16 @@ impl Analysis {
                         (time, nodes, iters)
                     });
                     // early return ends analysis
-                    return true;
+                    return AnalysisStatus::Finished;
                 }
             }
         }
         self.analysis = Some(an);
-        updated
+        if updated {
+            AnalysisStatus::MovesUpdated
+        } else {
+            AnalysisStatus::NoChange
+        }
     }
 
     /// Updates the stored moves by bringing move `m_id` up to date according to
