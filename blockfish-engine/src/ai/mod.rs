@@ -17,6 +17,7 @@ pub struct Snapshot {
     pub hold: Option<Color>,
     pub queue: Vec<Color>,
     pub matrix: BasicMatrix,
+    pub garbage_remaining: usize,
 }
 
 /// A suggested sequence and its rating.

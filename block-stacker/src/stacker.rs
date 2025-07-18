@@ -89,6 +89,14 @@ impl Stacker {
         self.cheese.generate(&mut self.matrix, combo)
     }
 
+    pub fn cheese_remaining(&self) -> usize {
+        if let Some(total) = self.cheese.cfg.total_lines {
+            total.saturating_sub(self.cheese.count)
+        } else {
+            usize::MAX
+        }
+    }
+
     /// Returns the current piece's typ, if any.
     pub fn current_piece_type(&self) -> Option<PieceType> {
         self.current.map(|pc| pc.typ)
