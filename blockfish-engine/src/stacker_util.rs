@@ -32,6 +32,7 @@ impl StackerExt for block_stacker::Stacker {
         let hold = self.held().map(to_color);
         let cols = self.ruleset().cols;
         let mut matrix = BasicMatrix::with_cols(cols as u16);
+        let garbage_remaining = self.cheese_remaining();
         for (coord, _) in self.matrix() {
             matrix.set(coord);
         }
@@ -39,6 +40,7 @@ impl StackerExt for block_stacker::Stacker {
             queue,
             hold,
             matrix,
+            garbage_remaining,
         })
     }
 

@@ -182,13 +182,14 @@ fn entry(mut args: Args) -> Result<()> {
         .unwrap_or_else(|| DEFAULT_CONFIG_DIR.into());
     let controls = controls::Controls::from_config_file(&config_dir)?;
     let theme = theme::Theme::from_config_file(&config_dir)?;
+    let engine_config = controller::Config::from_config_file(&config_dir)?;
 
     // build ai, game state, view and controller
     let rules = std::rc::Rc::new(Ruleset::guideline());
     let ai = blockfish::ai::AI::new(args.ai_config());
     let stacker = block_stacker::Stacker::new(rules.clone(), args.game_config());
     let view = view::View::new(resources, rules, controls, &theme);
-    let mut ctl = controller::Controller::new(ai, view, stacker);
+    let mut ctl = controller::Controller::new(ai, view, stacker, engine_config);
     let mut tmr = ctl.view().make_timer();
 
     loop {
@@ -241,5 +242,11 @@ impl FromConfigFile for controls::Controls {
 impl FromConfigFile for theme::Theme {
     fn config_name() -> &'static str {
         "theme"
+    }
+}
+
+impl FromConfigFile for controller::Config {
+    fn config_name() -> &'static str {
+        "engine"
     }
 }

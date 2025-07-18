@@ -14,6 +14,7 @@ pub struct State {
     queue_rev: Vec<Color>,
     has_held: bool,
     reached_goal: bool,
+    garbage_remaining: usize,
 }
 
 impl State {
@@ -72,7 +73,7 @@ impl State {
     /// Applies the given placement to this state, modifying the queue and matrix.
     pub fn place(&mut self, pl: &Place) {
         pl.shape.blit_to(&mut self.matrix, pl.tf);
-        self.reached_goal |= self.matrix.sift_rows();
+        self.reached_goal |= self.matrix.sift_rows(self.garbage_remaining);
         self.pop(pl.did_hold);
     }
 
@@ -107,6 +108,7 @@ impl From<Snapshot> for State {
             queue_rev,
             has_held,
             reached_goal: false,
+            garbage_remaining: snapshot.garbage_remaining,
         }
     }
 }
@@ -124,6 +126,7 @@ mod test {
             hold: None,
             queue: queue().collect(),
             matrix: BasicMatrix::with_cols(10),
+            garbage_remaining: 0,
         }
         .into();
         assert!(!s.is_terminal());
@@ -149,6 +152,7 @@ mod test {
             hold: Some(Color::n('S')),
             queue: "LTJI".chars().map(Color::n).collect(),
             matrix: BasicMatrix::with_cols(10),
+            garbage_remaining: 0,
         }
         .into();
         assert_eq!(s.next(), (Some(Color::n('L')), Some(Color::n('S'))));
@@ -161,6 +165,7 @@ mod test {
             hold: None,
             queue: "LTJI".chars().map(Color::n).collect(),
             matrix: BasicMatrix::with_cols(10),
+            garbage_remaining: 0,
         }
         .into();
         assert_eq!(s.next(), (Some(Color::n('L')), Some(Color::n('T'))));
@@ -174,6 +179,7 @@ mod test {
             hold: None,
             queue: vec![Color::n('I')],
             matrix: BasicMatrix::with_cols(10),
+            garbage_remaining: 0,
         }
         .into();
         assert_eq!(s.next(), (Some(Color::n('I')), None));
@@ -181,6 +187,7 @@ mod test {
             hold: Some(Color::n('O')),
             queue: vec![],
             matrix: BasicMatrix::with_cols(10),
+            garbage_remaining: 0,
         }
         .into();
         assert_eq!(s.next(), (None, Some(Color::n('O'))));

@@ -5,6 +5,7 @@ use crate::{
 use bitflags::bitflags;
 use block_stacker::Stacker;
 use blockfish::{ai, Parameters, StackerExt as _};
+use serde::Deserialize;
 use std::sync::mpsc;
 
 // limit on number of times to poll per frame -- prevents lagging out the UI thread.
@@ -22,6 +23,20 @@ pub struct Controller<'v> {
     prior_best_move: Option<Analysis>,
     engine_visible: bool,
     trie: Option<Trie>,
+    config: Config,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct Config {
+    suggestion_threshold: i64,
+}
+
+static DEFAULT_ENGINE_CONFIG: &[u8] = include_bytes!("../../support/default-engine.json");
+impl Default for Config {
+    fn default() -> Self {
+        serde_json::from_slice(DEFAULT_ENGINE_CONFIG)
+            .expect("BUG: default engine config is malformed!")
+    }
 }
 
 bitflags! {
@@ -40,7 +55,7 @@ bitflags! {
 
 impl<'v> Controller<'v> {
     /// Constructs a new `Controller`.
-    pub fn new(ai: ai::AI, view: View<'v>, stacker: Stacker) -> Self {
+    pub fn new(ai: ai::AI, view: View<'v>, stacker: Stacker, config: Config) -> Self {
         let mut ctl = Self {
             ai,
             view,
@@ -51,6 +66,7 @@ impl<'v> Controller<'v> {
             analysis: None,
             prior_best_move: None,
             engine_visible: true,
+            config,
         };
 
         ctl.consult_engine();
@@ -190,6 +206,12 @@ impl<'v> Controller<'v> {
                 let dr = if op == GameOp::RotateCCW { -1 } else { 1 };
                 upd.set(Update::PIECE, self.stacker.rotate(dr));
             }
+            GameOp::Rotate180 => {
+                // TODO using a 180 to get a piece placement that blockfish can't consider
+                // guarantees that it will call your move bad, bf should probably track 180s in
+                // some capacity to prevent that
+                upd.set(Update::PIECE, self.stacker.rotate(2));
+            }
             GameOp::SonicDrop => {
                 upd.set(Update::PIECE, self.stacker.sonic_drop());
             }
@@ -212,8 +234,11 @@ impl<'v> Controller<'v> {
                     }
                     if let Some(an) = self.analysis.take() {
                         let prior_best_move = an.clone_as_best();
-                        self.prior_best_move =
-                            Self::evaluate_selected_move(&self.stacker, prior_best_move);
+                        self.prior_best_move = Self::evaluate_selected_move(
+                            &self.config,
+                            &self.stacker,
+                            prior_best_move,
+                        );
                         self.analysis = Some(an);
                     }
                 }
@@ -249,6 +274,7 @@ impl<'v> Controller<'v> {
 
     /// compares the selected move against the suggestions
     fn evaluate_selected_move(
+        config: &Config,
         stacker: &Stacker,
         mut prior_best_move: Analysis,
     ) -> Option<Analysis> {
@@ -260,7 +286,6 @@ impl<'v> Controller<'v> {
             let mv = &prior_best_move.moves[prior_best_move.sel_idx];
             let mut next_suggestion = stacker.clone();
 
-            const SUGGESTION_THRESHOLD: i64 = 50;
             if prior_best_move.go_to(&mut next_suggestion) {
                 next_suggestion.hard_drop();
                 let next_suggestion = next_suggestion.snapshot()?;
@@ -272,7 +297,7 @@ impl<'v> Controller<'v> {
                     if actual_score == best_rating {
                         log::info!("good move");
                         return None;
-                    } else if actual_score - best_rating > SUGGESTION_THRESHOLD {
+                    } else if actual_score - best_rating > config.suggestion_threshold {
                         log::info!("actual_score - best_rating: {}", actual_score - best_rating);
                         prior_best_move.sel_idx = 0;
                         for m in &mut prior_best_move.moves {

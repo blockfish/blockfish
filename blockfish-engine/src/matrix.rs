@@ -120,13 +120,13 @@ impl BasicMatrix {
 
     /// Removes all rows that are either entirely occupied or entirely empty. Returns
     /// `true` if the bottom row was removed.
-    pub fn sift_rows(&mut self) -> bool {
+    pub fn sift_rows(&mut self, garbage_remaining: usize) -> bool {
         let mut bottom_removed = false;
         let mut dst_idx = 0;
         for src_idx in 0..self.data.len() {
             let row_bits = self.data[src_idx];
             if row_bits == full_row_bits(self.cols) || row_bits == empty_row_bits(self.cols) {
-                if src_idx == 0 {
+                if src_idx == 0 && garbage_remaining == 0 {
                     bottom_removed = true;
                 }
             } else {

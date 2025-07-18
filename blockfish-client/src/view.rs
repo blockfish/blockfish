@@ -144,13 +144,15 @@ impl<'r> View<'r> {
         let switch = &[Action::Engine(Next), Action::Engine(Prev)];
         let step = &[Action::Engine(StepForward), Action::Engine(StepBackward)];
         let go_to = &[Action::Engine(Goto)];
+        let engine_visibility = &[Action::Engine(ToggleVisibility)];
         let eng_ctrls = &mut help[1];
-        eng_ctrls.resize_with(5, Label::new);
+        eng_ctrls.resize_with(7, Label::new);
         eng_ctrls[0].set("engine controls");
         eng_ctrls[1].set(&label_text("toggle:       ", toggle));
         eng_ctrls[2].set(&label_text("switch sugg:  ", switch));
         eng_ctrls[3].set(&label_text("step sugg:    ", step));
         eng_ctrls[4].set(&label_text("go to sugg:   ", go_to));
+        eng_ctrls[5].set(&label_text("hide sugg until bad move: ", engine_visibility));
     }
 
     /// Sets the next previews to contain each piece type in `previews`, and the hold
